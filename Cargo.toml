@@ -12,6 +12,5 @@ wayland-protocols-wlr = { git="https://github.com/smithay/wayland-rs", features 
 cosmic-bg-config = { path = "./cosmic-bg-config" }
 anyhow = "1.0"
 notify = "5.0.0"
-calloop = { version = "*", features = ["executor"]}
 dirs = "4.0"
 walkdir = "2.3"

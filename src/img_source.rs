@@ -1,13 +1,13 @@
 use std::{fs, path::PathBuf};
 
-use calloop::{
-    channel::{self, channel},
-    LoopHandle,
-};
 use cosmic_bg_config::CosmicBgImgSource;
 use notify::{
     event::{ModifyKind, RenameMode},
     RecommendedWatcher, RecursiveMode, Watcher,
+};
+use sctk::reexports::calloop::{
+    channel::{self, channel},
+    LoopHandle,
 };
 
 use crate::CosmicBg;
@@ -28,7 +28,7 @@ pub fn img_source(
     let _ = handle
         .insert_source(
             notify_rx,
-            |e: calloop::channel::Event<(CosmicBgImgSource, notify::Event)>, _, state| {
+            |e: channel::Event<(CosmicBgImgSource, notify::Event)>, _, state| {
                 match e {
                     channel::Event::Msg((source, event)) => match event.kind {
                         notify::EventKind::Create(_)
