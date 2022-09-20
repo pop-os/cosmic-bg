@@ -4,7 +4,7 @@ mod img_source;
 use std::{collections::VecDeque, convert::TryInto, path::PathBuf, time::Duration};
 
 use cosmic_bg_config::{CosmicBgConfig, CosmicBgImgSource, CosmicBgOuput};
-use image::{io::Reader as ImageReader, DynamicImage, ImageBuffer, RgbImage};
+use image::{io::Reader as ImageReader, RgbImage};
 use sctk::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
@@ -132,8 +132,8 @@ fn main() -> anyhow::Result<()> {
                 cur_image,
                 image_queue,
                 source: bg.source.clone(),
-                filter_by_theme: bg.filter_by_theme,
-                rotation_frequency: bg.rotation_frequency,
+                _filter_by_theme: bg.filter_by_theme,
+                _rotation_frequency: bg.rotation_frequency,
                 new_image,
             }
         })
@@ -159,7 +159,7 @@ fn main() -> anyhow::Result<()> {
 
         exit: false,
         wallpapers,
-        config,
+        _config: config,
     };
 
     while !bg_state.registry_state.ready() {
@@ -187,8 +187,8 @@ pub struct CosmicBgWallpaper {
     source: CosmicBgImgSource,
     // TODO filter images by whether they seem to match dark / light mode
     // Alternatively only load from light / dark subdirectories given a directory source when this is active
-    filter_by_theme: bool,
-    rotation_frequency: u64,
+    _filter_by_theme: bool,
+    _rotation_frequency: u64,
     new_image: bool,
 }
 
@@ -196,7 +196,7 @@ pub struct CosmicBgWallpaper {
 pub struct CosmicBgLayer {
     layer: LayerSurface,
     wl_output: WlOutput,
-    output_info: OutputInfo,
+    _output_info: OutputInfo,
     pool: SlotPool,
     first_configure: bool,
     width: u32,
@@ -214,7 +214,7 @@ pub struct CosmicBg {
 
     exit: bool,
     wallpapers: Vec<CosmicBgWallpaper>,
-    config: CosmicBgConfig,
+    _config: CosmicBgConfig,
 }
 
 impl CompositorHandler for CosmicBg {
@@ -276,14 +276,6 @@ impl OutputHandler for CosmicBg {
             None => return,
         };
 
-        // let (width, height) = match item.cur_image.as_ref() {
-        //     Some(img) => (
-        //         output_info as u32,
-        //         output_info.physical_size.1 as u32,
-        //     ),
-        //     None => (1, 1),
-        // };
-
         let (width, height) = match output_info.modes.iter().find(|mode| mode.current) {
             Some(mode) => (mode.dimensions.0 as u32, mode.dimensions.1 as u32),
             None => (1, 1),
@@ -302,7 +294,7 @@ impl OutputHandler for CosmicBg {
         item.layers.push(CosmicBgLayer {
             layer,
             wl_output,
-            output_info,
+            _output_info: output_info,
             width,
             height,
             first_configure: false,
