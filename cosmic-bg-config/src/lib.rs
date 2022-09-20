@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
-use std::{path::{PathBuf}, fs::File};
+use std::{path::PathBuf, fs::File, str::FromStr};
 
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
 
@@ -28,6 +29,23 @@ pub enum CosmicBgImgSource {
     Path(String),
 }
 
+impl TryInto<PathBuf> for CosmicBgImgSource {
+    type Error= anyhow::Error;
+
+    fn try_into(self) -> Result<PathBuf, Self::Error> {
+        match (dirs::home_dir(), self) {
+            (Some(mut home), CosmicBgImgSource::Wallpapers) => {
+                home.push("Pictures/Wallpapers");
+                Ok(home)
+            },
+            (_, CosmicBgImgSource::Path(p)) => {
+                // home.push()
+                PathBuf::from_str(&p).map_err(|err| err.into())
+            },
+            _ => bail!("Failed to convert to path"),
+        }
+    }
+}
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgEntry {
