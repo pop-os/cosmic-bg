@@ -39,7 +39,6 @@ impl TryInto<PathBuf> for CosmicBgImgSource {
                 Ok(home)
             },
             (_, CosmicBgImgSource::Path(p)) => {
-                // home.push()
                 PathBuf::from_str(&p).map_err(|err| err.into())
             },
             _ => bail!("Failed to convert to path"),
