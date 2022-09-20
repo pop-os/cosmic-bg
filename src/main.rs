@@ -136,7 +136,7 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    let _ = img_source::img_source(
+    let _source_txs = img_source::img_source(
         config
             .backgrounds
             .iter()
