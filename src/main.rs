@@ -286,6 +286,7 @@ impl OutputHandler for CosmicBg {
         let layer = LayerSurface::builder()
             .size((width, height))
             .keyboard_interactivity(KeyboardInteractivity::None)
+            .exclusive_zone(-1)
             .namespace("wallpaper")
             .output(&wl_output)
             .map(qh, &self.layer_state, surface, Layer::Background)
