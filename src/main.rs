@@ -26,7 +26,8 @@ use sctk::{
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     shell::layer::{
-        KeyboardInteractivity, Layer, LayerHandler, LayerState, LayerSurface, LayerSurfaceConfigure,
+        Anchor, KeyboardInteractivity, Layer, LayerHandler, LayerState, LayerSurface,
+        LayerSurfaceConfigure,
     },
     shm::{slot::SlotPool, ShmHandler, ShmState},
 };
@@ -197,7 +198,7 @@ pub struct CosmicBgLayer {
     layer: LayerSurface,
     wl_output: WlOutput,
     _output_info: OutputInfo,
-    pool: SlotPool,
+    pool: Option<SlotPool>,
     first_configure: bool,
     width: u32,
     height: u32,
@@ -239,9 +240,6 @@ impl CompositorHandler for CosmicBg {
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        for wallpaper in &mut self.wallpapers {
-            wallpaper.draw(qh);
-        }
     }
 }
 
@@ -276,15 +274,14 @@ impl OutputHandler for CosmicBg {
             None => return,
         };
 
-        let (width, height) = match output_info.modes.iter().find(|mode| mode.current) {
-            Some(mode) => (mode.dimensions.0 as u32, mode.dimensions.1 as u32),
-            None => (1, 1),
-        };
+        let (width, height) = output_info.logical_size;
+        let (width, height) = (width as u32, height as u32);
 
         let surface = self.compositor_state.create_surface(qh).unwrap();
 
         let layer = LayerSurface::builder()
-            .size((width, height))
+            .size((0, 0))
+            .anchor(Anchor::all())
             .keyboard_interactivity(KeyboardInteractivity::None)
             .exclusive_zone(-1)
             .namespace("wallpaper")
@@ -299,8 +296,7 @@ impl OutputHandler for CosmicBg {
             width,
             height,
             first_configure: false,
-            pool: SlotPool::new(width as usize * height as usize * 4, &self.shm_state)
-                .expect("Failed to create pool"),
+            pool: None,
         });
     }
 
@@ -367,20 +363,27 @@ impl LayerHandler for CosmicBg {
         _serial: u32,
     ) {
         for wallpaper in &mut self.wallpapers {
+            let (w, h) = configure.new_size;
             let mut draw = false;
-            for w_layer in &mut wallpaper.layers {
-                if &w_layer.layer == layer && configure.new_size.0 != 0 && configure.new_size.1 != 0
-                {
-                    w_layer.width = configure.new_size.0;
-                    w_layer.height = configure.new_size.1;
-                    draw = true;
-                    if w_layer.first_configure {
-                        w_layer.first_configure = false;
-                    }
+            if let Some(w_layer) = wallpaper.layers.iter_mut().find(|l| &l.layer == layer) {
+                w_layer.width = w;
+                w_layer.height = h;
+                if let Some(pool) = w_layer.pool.as_mut() {
+                    pool.resize(w as usize * h as usize * 4)
+                        .expect("failed to resize the pool");
+                } else {
+                    w_layer.pool.replace(
+                        SlotPool::new(w as usize * h as usize * 4, &self.shm_state)
+                            .expect("Failed to create pool"),
+                    );
                 }
-            }
-            if draw {
-                wallpaper.draw(qh);
+                if w_layer.first_configure {
+                    w_layer.first_configure = false;
+                }
+                if wallpaper.layers.iter().all(|l| !l.first_configure) {
+                    wallpaper.draw(qh);
+                }
+                break;
             }
         }
     }
@@ -394,10 +397,6 @@ impl ShmHandler for CosmicBg {
 
 impl CosmicBgWallpaper {
     pub fn draw(&mut self, qh: &QueueHandle<CosmicBg>) {
-        if !self.new_image {
-            return;
-        }
-
         for layer in self.layers.iter_mut().filter(|l| !l.first_configure) {
             let img = match self.cur_image.as_ref().map(|img| {
                 image::imageops::resize(
@@ -414,7 +413,11 @@ impl CosmicBgWallpaper {
             let width = layer.width;
             let height = layer.height;
             let stride = layer.width as i32 * 4;
-            let pool = &mut layer.pool;
+
+            let pool = match layer.pool.as_mut() {
+                Some(p) => p,
+                None => continue,
+            };
 
             let (buffer, canvas) = pool
                 .create_buffer(
@@ -448,7 +451,6 @@ impl CosmicBgWallpaper {
             buffer.attach_to(wl_surface).expect("buffer attach");
             wl_surface.commit();
         }
-        self.new_image = false;
     }
 }
 

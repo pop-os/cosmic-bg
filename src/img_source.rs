@@ -48,9 +48,7 @@ pub fn img_source(
                                 w.image_queue.retain(|p| !event.paths.contains(p));
                             }
                         }
-                        e => {
-                            dbg!(e);
-                        }
+                        e => {}
                     },
                     channel::Event::Closed => {
                         // TODO log drop
