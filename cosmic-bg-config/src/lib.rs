@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
-use std::{path::{PathBuf}, fs::File, str::FromStr, env};
+use std::{env, fs::File, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use xdg::BaseDirectories;
@@ -8,14 +8,11 @@ use xdg::BaseDirectories;
 /// Configuration for the panel's ouput
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub enum CosmicBgOuput {
+pub enum CosmicBgOutput {
     /// show panel on all outputs
     All,
     /// show panel on a specific output
-    MakeModel {
-        make: String,
-        model: String,
-    },
+    MakeModel { make: String, model: String },
 }
 
 /// Configuration for the panel's ouput
@@ -28,34 +25,74 @@ pub enum CosmicBgImgSource {
     Path(String),
 }
 
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgEntry {
     /// the configured output
-    pub output: CosmicBgOuput,
+    pub output: CosmicBgOutput,
     /// the configured image source
     pub source: CosmicBgImgSource,
     /// whether the images should be filtered by the active theme
     pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
+    /// filter used to scale images
+    #[serde(default)]
+    pub filter_method: FilterMethod,
+    /// mode used to scale images,
+    #[serde(default)]
+    pub scaling_mode: ScalingMode,
+}
+
+/// Image filtering method
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum FilterMethod {
+    // nearest neighbor filtering
+    Nearest,
+    // linear filtering
+    Linear,
+    // lanczos filtering with window 3
+    Lanczos,
+}
+
+impl Default for FilterMethod {
+    fn default() -> Self {
+        FilterMethod::Lanczos
+    }
+}
+
+/// Image scaling mode
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum ScalingMode {
+    // Fit the image and fill the rest of the area with the given RGB color
+    Fit([f32; 3]),
+    /// Stretch the image ignoring any aspect ratio to fit the area
+    Stretch,
+    /// Zoom the image so that it fill the whole area
+    Zoom,
+}
+
+impl Default for ScalingMode {
+    fn default() -> Self {
+        ScalingMode::Zoom
+    }
 }
 
 impl CosmicBgEntry {
     /// defaults to /usr/share/backgrounds/pop/ if it fails to find configured path
     pub fn source_path(&self) -> PathBuf {
         match &self.source {
-            CosmicBgImgSource::Wallpapers => {
-                env::var("XDG_PICTURES_DIR").ok().map(|s| PathBuf::from(s)).or_else(|| xdg_user::pictures().unwrap_or(None)).map(|mut pics_dir| {
+            CosmicBgImgSource::Wallpapers => env::var("XDG_PICTURES_DIR")
+                .ok()
+                .map(|s| PathBuf::from(s))
+                .or_else(|| xdg_user::pictures().unwrap_or(None))
+                .map(|mut pics_dir| {
                     pics_dir.push("Wallpapers");
                     pics_dir
-                })      
-            },
-            CosmicBgImgSource::Path(p) => {
-                PathBuf::from_str(&p).ok()
-            },
-        }.unwrap_or_else(|| "/usr/share/backgrounds/pop/".into())
+                }),
+            CosmicBgImgSource::Path(p) => PathBuf::from_str(&p).ok(),
+        }
+        .unwrap_or_else(|| "/usr/share/backgrounds/pop/".into())
     }
 }
 
@@ -63,25 +100,26 @@ impl CosmicBgEntry {
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgConfig {
     /// the configured wallpapers8
-    pub backgrounds: Vec<CosmicBgEntry>
+    pub backgrounds: Vec<CosmicBgEntry>,
 }
 
 impl Default for CosmicBgConfig {
     fn default() -> Self {
         CosmicBgConfig {
             backgrounds: vec![CosmicBgEntry {
-                output: CosmicBgOuput::All,
+                output: CosmicBgOutput::All,
                 source: CosmicBgImgSource::Wallpapers,
                 filter_by_theme: true,
                 rotation_frequency: 10,
-            }]
+                filter_method: FilterMethod::Lanczos,
+                scaling_mode: ScalingMode::Zoom,
+            }],
         }
     }
 }
 
 static NAME: &str = "com.system76.CosmicBg";
 static CONFIG: &str = "config.ron";
-
 
 impl CosmicBgConfig {
     /// load config with the provided name
