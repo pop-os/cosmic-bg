@@ -45,7 +45,15 @@ fn main() -> anyhow::Result<()> {
         .unwrap()
         .insert(event_loop.handle())
         .unwrap();
-    let config = CosmicBgConfig::load().unwrap_or_default();
+
+    // TODO: this could be so nice with `inspect_err`, but that is behind the unstable feature `result_option_inspect` right now
+    let config = match CosmicBgConfig::load() {
+        Ok(conf) => conf,
+        Err(err) => {
+            eprintln!("Config file error, falling back to defaults: {err}");
+            CosmicBgConfig::default()
+        }
+    };
 
     // initial setup with all imagesf
     let wallpapers = config
