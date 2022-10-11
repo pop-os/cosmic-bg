@@ -110,7 +110,7 @@ impl Default for CosmicBgConfig {
                 output: CosmicBgOutput::All,
                 source: CosmicBgImgSource::Wallpapers,
                 filter_by_theme: true,
-                rotation_frequency: 10,
+                rotation_frequency: 3600,
                 filter_method: FilterMethod::Lanczos,
                 scaling_mode: ScalingMode::Zoom,
             }],
