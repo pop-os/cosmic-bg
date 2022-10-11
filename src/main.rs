@@ -3,8 +3,8 @@ mod img_source;
 
 use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
-use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod};
-use image::{io::Reader as ImageReader, RgbImage};
+use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod, ScalingMode};
+use image::{io::Reader as ImageReader, Pixel, RgbImage};
 use itertools::Itertools;
 use sctk::{
     compositor::{CompositorHandler, CompositorState},
@@ -144,6 +144,7 @@ fn main() -> anyhow::Result<()> {
                 _rotation_frequency: bg.rotation_frequency,
                 new_image,
                 filter,
+                scaling: bg.scaling_mode.clone(),
             }
         })
         .collect_vec();
@@ -199,6 +200,7 @@ pub struct CosmicBgWallpaper {
     _filter_by_theme: bool,
     _rotation_frequency: u64,
     filter: image::imageops::FilterType,
+    scaling: ScalingMode,
     new_image: bool,
 }
 
@@ -406,12 +408,59 @@ impl ShmHandler for CosmicBg {
 impl CosmicBgWallpaper {
     pub fn draw(&mut self, qh: &QueueHandle<CosmicBg>) {
         for layer in self.layers.iter_mut().filter(|l| !l.first_configure) {
-            let img = match self
-                .cur_image
-                .as_ref()
-                .map(|img| image::imageops::resize(img, layer.width, layer.height, self.filter))
-            {
-                Some(img) => img,
+            let img = match self.cur_image.as_ref() {
+                Some(img) => match self.scaling {
+                    ScalingMode::Fit(color) => {
+                        let u8_color = [
+                            (u8::MAX as f32 * color[0]).round() as u8,
+                            (u8::MAX as f32 * color[1]).round() as u8,
+                            (u8::MAX as f32 * color[2]).round() as u8,
+                        ];
+                        let mut final_image = image::ImageBuffer::from_pixel(
+                            layer.width,
+                            layer.height,
+                            *image::Rgb::from_slice(&u8_color),
+                        );
+
+                        let ratio = (layer.width as f64 / img.width() as f64)
+                            .min(layer.height as f64 / img.height() as f64);
+                        let (new_width, new_height) = (
+                            (img.width() as f64 * ratio).round() as u32,
+                            (img.height() as f64 * ratio).round() as u32,
+                        );
+                        let new_image =
+                            image::imageops::resize(img, new_width, new_height, self.filter);
+                        image::imageops::replace(
+                            &mut final_image,
+                            &new_image,
+                            ((layer.width - new_width) / 2).into(),
+                            ((layer.height - new_height) / 2).into(),
+                        );
+
+                        final_image
+                    }
+                    ScalingMode::Zoom => {
+                        let ratio = (layer.width as f64 / img.width() as f64)
+                            .max(layer.height as f64 / img.height() as f64);
+                        let (new_width, new_height) = (
+                            (img.width() as f64 * ratio).round() as u32,
+                            (img.height() as f64 * ratio).round() as u32,
+                        );
+                        let mut new_image =
+                            image::imageops::resize(img, new_width, new_height, self.filter);
+                        image::imageops::crop(
+                            &mut new_image,
+                            (new_width - layer.width) / 2,
+                            (new_height - layer.height) / 2,
+                            layer.width,
+                            layer.height,
+                        )
+                        .to_image()
+                    }
+                    ScalingMode::Stretch => {
+                        image::imageops::resize(img, layer.width, layer.height, self.filter)
+                    }
+                },
                 None => continue,
             };
 

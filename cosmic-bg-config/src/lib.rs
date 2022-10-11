@@ -39,6 +39,9 @@ pub struct CosmicBgEntry {
     /// filter used to scale images
     #[serde(default)]
     pub filter_method: FilterMethod,
+    /// mode used to scale images,
+    #[serde(default)]
+    pub scaling_mode: ScalingMode,
 }
 
 /// Image filtering method
@@ -55,6 +58,23 @@ pub enum FilterMethod {
 impl Default for FilterMethod {
     fn default() -> Self {
         FilterMethod::Lanczos
+    }
+}
+
+/// Image scaling mode
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum ScalingMode {
+    // Fit the image and fill the rest of the area with the given RGB color
+    Fit([f32; 3]),
+    /// Stretch the image ignoring any aspect ratio to fit the area
+    Stretch,
+    /// Zoom the image so that it fill the whole area
+    Zoom,
+}
+
+impl Default for ScalingMode {
+    fn default() -> Self {
+        ScalingMode::Zoom
     }
 }
 
@@ -92,6 +112,7 @@ impl Default for CosmicBgConfig {
                 filter_by_theme: true,
                 rotation_frequency: 10,
                 filter_method: FilterMethod::Lanczos,
+                scaling_mode: ScalingMode::Zoom,
             }],
         }
     }
