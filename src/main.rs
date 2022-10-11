@@ -3,7 +3,7 @@ mod img_source;
 
 use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
-use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput};
+use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod};
 use image::{io::Reader as ImageReader, RgbImage};
 use itertools::Itertools;
 use sctk::{
@@ -127,6 +127,12 @@ fn main() -> anyhow::Result<()> {
             }
             let new_image = cur_image.is_some();
 
+            let filter = match bg.filter_method {
+                FilterMethod::Nearest => image::imageops::Nearest,
+                FilterMethod::Linear => image::imageops::Triangle,
+                FilterMethod::Lanczos => image::imageops::Lanczos3,
+            };
+
             CosmicBgWallpaper {
                 id,
                 configured_output: bg.output.clone(),
@@ -137,6 +143,7 @@ fn main() -> anyhow::Result<()> {
                 _filter_by_theme: bg.filter_by_theme,
                 _rotation_frequency: bg.rotation_frequency,
                 new_image,
+                filter,
             }
         })
         .collect_vec();
@@ -191,6 +198,7 @@ pub struct CosmicBgWallpaper {
     // Alternatively only load from light / dark subdirectories given a directory source when this is active
     _filter_by_theme: bool,
     _rotation_frequency: u64,
+    filter: image::imageops::FilterType,
     new_image: bool,
 }
 
@@ -398,14 +406,11 @@ impl ShmHandler for CosmicBg {
 impl CosmicBgWallpaper {
     pub fn draw(&mut self, qh: &QueueHandle<CosmicBg>) {
         for layer in self.layers.iter_mut().filter(|l| !l.first_configure) {
-            let img = match self.cur_image.as_ref().map(|img| {
-                image::imageops::resize(
-                    img,
-                    layer.width,
-                    layer.height,
-                    image::imageops::FilterType::Nearest,
-                )
-            }) {
+            let img = match self
+                .cur_image
+                .as_ref()
+                .map(|img| image::imageops::resize(img, layer.width, layer.height, self.filter))
+            {
                 Some(img) => img,
                 None => continue,
             };

@@ -40,6 +40,26 @@ pub struct CosmicBgEntry {
     pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
+    /// filter used to scale images
+    #[serde(default)]
+    pub filter_method: FilterMethod,
+}
+
+/// Image filtering method
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum FilterMethod {
+    // nearest neighbor filtering
+    Nearest,
+    // linear filtering
+    Linear,
+    // lanczos filtering with window 3
+    Lanczos,
+}
+
+impl Default for FilterMethod {
+    fn default() -> Self {
+        FilterMethod::Lanczos
+    }
 }
 
 impl CosmicBgEntry {
@@ -74,7 +94,8 @@ impl Default for CosmicBgConfig {
                 source: CosmicBgImgSource::Wallpapers,
                 filter_by_theme: true,
                 rotation_frequency: 10,
-            }]
+                filter_method: FilterMethod::Lanczos,
+            }],
         }
     }
 }
