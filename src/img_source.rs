@@ -34,6 +34,7 @@ pub fn img_source(
                                     }
                                 }
                                 w.image_queue.retain(|p| !event.paths.contains(p));
+                                // TODO maybe resort or shuffle at some point?
                             }
                         }
                         notify::EventKind::Remove(_)

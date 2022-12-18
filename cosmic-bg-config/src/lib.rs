@@ -42,40 +42,45 @@ pub struct CosmicBgEntry {
     /// mode used to scale images,
     #[serde(default)]
     pub scaling_mode: ScalingMode,
+    #[serde(default)]
+    pub sampling_method: SamplingMethod,
 }
 
 /// Image filtering method
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub enum FilterMethod {
     // nearest neighbor filtering
     Nearest,
     // linear filtering
     Linear,
     // lanczos filtering with window 3
+    #[default]
     Lanczos,
 }
 
-impl Default for FilterMethod {
-    fn default() -> Self {
-        FilterMethod::Lanczos
-    }
+/// Image filtering method
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default)]
+pub enum SamplingMethod {
+    // Rotate through images in Aplhanumeeric order
+    #[default]
+    Alphanumeric,
+    // Rotate through images in Random order
+    Random,
+    // TODO GnomeWallpapers
+
 }
 
+
 /// Image scaling mode
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub enum ScalingMode {
     // Fit the image and fill the rest of the area with the given RGB color
     Fit([f32; 3]),
     /// Stretch the image ignoring any aspect ratio to fit the area
     Stretch,
     /// Zoom the image so that it fill the whole area
+    #[default]
     Zoom,
-}
-
-impl Default for ScalingMode {
-    fn default() -> Self {
-        ScalingMode::Zoom
-    }
 }
 
 impl CosmicBgEntry {
@@ -105,16 +110,7 @@ pub struct CosmicBgConfig {
 
 impl Default for CosmicBgConfig {
     fn default() -> Self {
-        CosmicBgConfig {
-            backgrounds: vec![CosmicBgEntry {
-                output: CosmicBgOutput::All,
-                source: CosmicBgImgSource::Wallpapers,
-                filter_by_theme: true,
-                rotation_frequency: 3600,
-                filter_method: FilterMethod::Lanczos,
-                scaling_mode: ScalingMode::Zoom,
-            }],
-        }
+        ron::de::from_str(include_str!("../config.ron")).unwrap()
     }
 }
 

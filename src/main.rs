@@ -3,9 +3,10 @@ mod img_source;
 
 use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
-use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod, ScalingMode};
+use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod, ScalingMode, SamplingMethod};
 use image::{io::Reader as ImageReader, Pixel, RgbImage};
 use itertools::Itertools;
+use rand::{seq::SliceRandom, thread_rng};
 use sctk::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
@@ -55,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // initial setup with all imagesf
+    // initial setup with all images
     let wallpapers = config
         .backgrounds
         .iter()
@@ -74,6 +75,13 @@ fn main() -> anyhow::Result<()> {
                 }
             } else if path_source.is_file() {
                 image_queue.push_front(path_source);
+            }
+            {
+                let image_slice = image_queue.make_contiguous();
+                match bg.sampling_method {
+                    SamplingMethod::Alphanumeric => image_slice.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy())),
+                    SamplingMethod::Random => image_slice.shuffle(&mut thread_rng()),
+                };
             }
 
             let cur_image = image_queue.pop_front().and_then(|cur_image_path| {
@@ -181,12 +189,12 @@ fn main() -> anyhow::Result<()> {
 
     while !bg_state.registry_state.ready() {
         event_loop
-            .dispatch(Duration::from_millis(16), &mut bg_state)
+            .dispatch(None, &mut bg_state)
             .unwrap();
     }
 
     loop {
-        event_loop.dispatch(Duration::from_millis(16), &mut bg_state)?;
+        event_loop.dispatch(None, &mut bg_state)?;
 
         if bg_state.exit {
             break;
