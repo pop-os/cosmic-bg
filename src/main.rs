@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0-only
 mod img_source;
 
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{collections::VecDeque, path::PathBuf, time::Duration, sync::{Arc, Mutex}};
 
-use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod, SamplingMethod, ScalingMode};
+use cosmic_bg_config::{CosmicBgConfig, CosmicBgOutput, FilterMethod, SamplingMethod, ScalingMode, CosmicBgEntry};
 use image::{io::Reader as ImageReader, Pixel, RgbImage};
 use itertools::Itertools;
 use rand::{seq::SliceRandom, thread_rng};
@@ -27,14 +27,20 @@ use sctk::{
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    shell::layer::{
+    shell::{WaylandSurface, wlr_layer::{
         Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
         LayerSurfaceConfigure,
-    },
-    shm::{slot::SlotPool, ShmHandler, ShmState},
+    }},
+    shm::{slot::SlotPool, ShmHandler, Shm},
 };
 use walkdir::WalkDir;
 use cosmic_config::ConfigGet;
+
+#[derive(Debug, Clone)]
+pub enum ConfigEvent {
+    EntryChanged(CosmicBgEntry),
+    ConfigChanged(CosmicBgConfig),
+}
 
 fn main() -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().unwrap();
@@ -50,33 +56,44 @@ fn main() -> anyhow::Result<()> {
 
     let config_helper = CosmicBgConfig::helper();
 
+    let (config_tx, config_rx) = calloop::channel::sync_channel(20);
+
+    event_loop.handle().insert_source(config_rx, |config, _, state: &mut CosmicBg| {
+        dbg!(config);
+    }).unwrap();
+
+
+    //let config_tx = Arc::new(Mutex::new(config_tx));
     // TODO: this could be so nice with `inspect_err`, but that is behind the unstable feature `result_option_inspect` right now
-    let config = match config_helper.as_ref() {
+    let (config, _watcher) = match config_helper.as_ref() {
         Ok(helper) => {
             let watcher = helper
                 .watch(move |config_helper, keys| {
                     println!("Changed: {:?}", keys);
                     for key in keys.iter() {
                         println!(" - {} = {:?}", key, config_helper.get::<ron::Value>(key));
+                        if key == cosmic_bg_config::BG_KEY {
+                            let config = CosmicBgConfig::load(config_helper).unwrap();
+                            config_tx.send(ConfigEvent::ConfigChanged(config)).unwrap();
+                        }
                     }
+                    
                 })
                 .unwrap();
 
-            match CosmicBgConfig::load(helper) {
+            (match CosmicBgConfig::load(helper) {
                 Ok(conf) => conf,
                 Err(err) => {
                     eprintln!("Config file error, falling back to defaults: {err:?}");
                     CosmicBgConfig::default()
                 }
-            }
+            }, Some(watcher))
         }
         Err(err) => {
             eprintln!("Config file error, falling back to defaults: {err:?}");
-            CosmicBgConfig::default()
+            (CosmicBgConfig::default(), None)
         }
     };
-
-    //let (config_tx, config_rx) = calloop::channel::channel();
 
     // initial setup with all images
     let wallpapers = config
@@ -202,7 +219,7 @@ fn main() -> anyhow::Result<()> {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
         compositor_state: CompositorState::bind(&globals, &qh).unwrap(),
-        shm_state: ShmState::bind(&globals, &qh).unwrap(),
+        shm_state: Shm::bind(&globals, &qh).unwrap(),
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
         qh,
 
@@ -254,7 +271,7 @@ pub struct CosmicBg {
     registry_state: RegistryState,
     output_state: OutputState,
     compositor_state: CompositorState,
-    shm_state: ShmState,
+    shm_state: Shm,
     layer_state: LayerShell,
     qh: QueueHandle<CosmicBg>,
 
@@ -319,16 +336,18 @@ impl OutputHandler for CosmicBg {
 
         let surface = self.compositor_state.create_surface(qh);
 
-        let layer = LayerSurface::builder()
-            .size((0, 0))
-            .anchor(Anchor::all())
-            .keyboard_interactivity(KeyboardInteractivity::None)
-            .exclusive_zone(-1)
-            .namespace("wallpaper")
-            .output(&wl_output)
-            .map(qh, &self.layer_state, surface, Layer::Background)
-            .expect("layer surface creation");
-
+        let layer = self.layer_state.create_layer_surface(
+            qh,
+            surface.clone(),
+            Layer::Background,
+            "wallpaper".into(),
+            Some(&wl_output),
+        );
+        layer.set_anchor(Anchor::all());
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_size(width, height);
+        surface.commit(); 
         item.layers.push(CosmicBgLayer {
             layer,
             wl_output,
@@ -425,7 +444,7 @@ impl LayerShellHandler for CosmicBg {
 }
 
 impl ShmHandler for CosmicBg {
-    fn shm_state(&mut self) -> &mut ShmState {
+    fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm_state
     }
 }

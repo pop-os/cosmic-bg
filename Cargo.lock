@@ -953,7 +953,7 @@ checksum = "a507befe795404456341dfab10cef66ead4c041f62b8b11bbb92bffe5d0953e0"
 [[package]]
 name = "smithay-client-toolkit"
 version = "0.16.0"
-source = "git+https://github.com/Smithay/client-toolkit?rev=a3d1af8#a3d1af852a607587114ccc6631c87046ecc898d3"
+source = "git+https://github.com/Smithay/client-toolkit?rev=bb3b73e#bb3b73e6dd923905d00325838b758e9cb0aba6af"
 dependencies = [
  "bitflags",
  "calloop",
@@ -1164,7 +1164,6 @@ checksum = "85bde68449abab1a808e5227b6e295f4ae3680911eb7711b4a2cb90141edb780"
 dependencies = [
  "bitflags",
  "calloop",
- "log",
  "nix 0.26.2",
  "wayland-backend",
  "wayland-scanner",
