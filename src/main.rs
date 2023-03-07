@@ -34,6 +34,7 @@ use sctk::{
     shm::{slot::SlotPool, ShmHandler, ShmState},
 };
 use walkdir::WalkDir;
+use cosmic_config::ConfigGet;
 
 fn main() -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().unwrap();
@@ -47,14 +48,35 @@ fn main() -> anyhow::Result<()> {
         .insert(event_loop.handle())
         .unwrap();
 
+    let config_helper = CosmicBgConfig::helper();
+
     // TODO: this could be so nice with `inspect_err`, but that is behind the unstable feature `result_option_inspect` right now
-    let config = match CosmicBgConfig::load() {
-        Ok(conf) => conf,
+    let config = match config_helper.as_ref() {
+        Ok(helper) => {
+            let watcher = helper
+                .watch(move |config_helper, keys| {
+                    println!("Changed: {:?}", keys);
+                    for key in keys.iter() {
+                        println!(" - {} = {:?}", key, config_helper.get::<ron::Value>(key));
+                    }
+                })
+                .unwrap();
+
+            match CosmicBgConfig::load(helper) {
+                Ok(conf) => conf,
+                Err(err) => {
+                    eprintln!("Config file error, falling back to defaults: {err:?}");
+                    CosmicBgConfig::default()
+                }
+            }
+        }
         Err(err) => {
-            eprintln!("Config file error, falling back to defaults: {err}");
+            eprintln!("Config file error, falling back to defaults: {err:?}");
             CosmicBgConfig::default()
         }
     };
+
+    //let (config_tx, config_rx) = calloop::channel::channel();
 
     // initial setup with all images
     let wallpapers = config
@@ -283,9 +305,8 @@ impl OutputHandler for CosmicBg {
             .iter_mut()
             .find(|w| match &w.configured_output {
                 CosmicBgOutput::All => !w.layers.iter().any(|l| l.wl_output == wl_output),
-                CosmicBgOutput::MakeModel { make, model } => {
-                    make == &output_info.make
-                        && model == &output_info.model
+                CosmicBgOutput::Name(name)  => {
+                    Some(name) == output_info.name.as_ref()
                         && !w.layers.iter().any(|l| l.wl_output == wl_output)
                 }
             }) {
@@ -344,8 +365,8 @@ impl OutputHandler for CosmicBg {
             .iter_mut()
             .find(|w| match &w.configured_output {
                 CosmicBgOutput::All => true,
-                CosmicBgOutput::MakeModel { make, model } => {
-                    make == &output_info.make && model == &output_info.model
+                CosmicBgOutput::Name(name) => {
+                    Some(name) == output_info.name.as_ref()
                 }
             }) {
             Some(item) => item,

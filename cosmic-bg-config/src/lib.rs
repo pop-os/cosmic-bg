@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
-use std::{env, fs::File, path::PathBuf, str::FromStr};
+use std::{env, path::PathBuf, str::FromStr};
 
+use cosmic_config::{Config, ConfigGet};
 use serde::{Deserialize, Serialize};
-use xdg::BaseDirectories;
 
 /// Configuration for the panel's ouput
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -12,7 +12,16 @@ pub enum CosmicBgOutput {
     /// show panel on all outputs
     All,
     /// show panel on a specific output
-    MakeModel { make: String, model: String },
+    Name(String),
+}
+
+impl ToString for CosmicBgOutput {
+    fn to_string(&self) -> String {
+        match self {
+            CosmicBgOutput::All => "all".into(),
+            CosmicBgOutput::Name(name) => format!("output.{}", name.clone()),
+        }
+    }
 }
 
 /// Configuration for the panel's ouput
@@ -97,56 +106,46 @@ impl CosmicBgEntry {
         }
         .unwrap_or_else(|| "/usr/share/backgrounds/pop/".into())
     }
+
+    pub fn key(&self) -> String {
+        self.output.to_string()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgConfig {
-    /// the configured wallpapers8
+    /// the configured wallpapers
     pub backgrounds: Vec<CosmicBgEntry>,
 }
 
+// Fallback in case config and default schema can't be loaded
 impl Default for CosmicBgConfig {
     fn default() -> Self {
         ron::de::from_str(include_str!("../config.ron")).unwrap()
     }
 }
 
-static NAME: &str = "com.system76.CosmicBg";
-static CONFIG: &str = "config.ron";
+pub const NAME: &str = "com.system76.CosmicBg";
+pub const BG_KEY: &str = "backgrounds";
 
 impl CosmicBgConfig {
     /// load config with the provided name
-    pub fn load() -> anyhow::Result<Self> {
-        let config_path: PathBuf = vec![NAME, CONFIG].iter().collect();
-        let config_path =
-            match BaseDirectories::new().map(|dirs| dirs.find_config_file(&config_path)) {
-                Ok(Some(path)) => path,
-                _ => anyhow::bail!("Failed to get find config file"),
-            };
+    pub fn load(config: &Config) -> Result<Self, cosmic_config::Error> {
+        let entry_keys = config.get::<Vec<CosmicBgOutput>>(BG_KEY)?;
+        let backgrounds: Vec<_> = entry_keys.into_iter().filter_map(|c| {
+            config.get::<CosmicBgEntry>(&c.to_string()).ok()
+        }).collect();
 
-        let file = match File::open(&config_path) {
-            Ok(file) => file,
-            Err(err) => {
-                anyhow::bail!("Failed to open '{}': {}", config_path.display(), err);
-            }
-        };
-
-        match ron::de::from_reader::<_, Self>(file) {
-            Ok(config) => Ok(config),
-            Err(err) => {
-                anyhow::bail!("Failed to parse '{}': {}", config_path.display(), err);
-            }
+        if backgrounds.is_empty() {
+            eprintln!("No wallpapers configured. Using defaults.");
+            // TODO try to use the default schema before falling back
+            Ok(Self::default())
+        } else {
+            Ok(Self { backgrounds })
         }
     }
-
-    /// write config to config file
-    pub fn write(&self) -> anyhow::Result<()> {
-        let config_path: PathBuf = vec![NAME, CONFIG].iter().collect();
-        let xdg = BaseDirectories::new()?;
-        let f = xdg.place_config_file(&config_path).unwrap();
-        let f = File::create(f)?;
-        ron::ser::to_writer_pretty(&f, self, ron::ser::PrettyConfig::default())?;
-        Ok(())
+    pub fn helper() -> Result<Config, cosmic_config::Error> {
+        Config::new(NAME, 1)
     }
 }
