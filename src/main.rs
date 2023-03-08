@@ -4,8 +4,7 @@ mod img_source;
 use std::{collections::VecDeque, fs, path::PathBuf, time::Duration};
 
 use cosmic_bg_config::{
-    CosmicBgConfig, CosmicBgEntry, CosmicBgOutput, SamplingMethod,
-    ScalingMode,
+    CosmicBgConfig, CosmicBgEntry, CosmicBgOutput, SamplingMethod, ScalingMode,
 };
 use cosmic_config::ConfigGet;
 use image::{io::Reader as ImageReader, Pixel, RgbImage};
@@ -79,7 +78,7 @@ fn main() -> anyhow::Result<()> {
                     if let Some(wallpaper) = state
                         .wallpapers
                         .iter_mut()
-                        .find(|w| w.entry.output == entry.output )
+                        .find(|w| w.entry.output == entry.output)
                     {
                         wallpaper.apply_entry(entry, state.source_tx.clone());
                     }
@@ -128,13 +127,21 @@ fn main() -> anyhow::Result<()> {
 
     let source_tx = img_source::img_source(event_loop.handle());
     // initial setup with all images
-    let wallpapers = config
+    let mut wallpapers = config
         .backgrounds
         .iter()
-        .map(|bg| CosmicBgWallpaper::new(bg.clone(), qh.clone(), event_loop.handle(), source_tx.clone()))
+        .map(|bg| {
+            CosmicBgWallpaper::new(
+                bg.clone(),
+                qh.clone(),
+                event_loop.handle(),
+                source_tx.clone(),
+            )
+        })
         .collect_vec();
-
     // XXX All entry if it exists, should be placed last in the list of wallpapers
+    wallpapers.sort_by(|a, b| a.entry.output.cmp(&b.entry.output));
+
     let mut bg_state = CosmicBg {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -146,7 +153,8 @@ fn main() -> anyhow::Result<()> {
         loop_handle: event_loop.handle(),
         exit: false,
         wallpapers,
-        config
+        config,
+        active_outputs: Vec::new(),
     };
 
     loop {
@@ -163,7 +171,7 @@ fn main() -> anyhow::Result<()> {
 pub struct CosmicBgLayer {
     layer: LayerSurface,
     wl_output: WlOutput,
-    _output_info: OutputInfo,
+    output_info: OutputInfo,
     pool: Option<SlotPool>,
     first_configure: bool,
     width: u32,
@@ -183,10 +191,12 @@ pub struct CosmicBg {
     exit: bool,
     wallpapers: Vec<CosmicBgWallpaper>,
     config: CosmicBgConfig,
+    active_outputs: Vec<WlOutput>,
 }
 
 impl CosmicBg {
     fn apply_config(&mut self, mut config: CosmicBgConfig) {
+        let mut existing_layers = Vec::new();
         self.wallpapers.retain_mut(|w| {
             if let Some(pos) = config
                 .backgrounds
@@ -196,17 +206,79 @@ impl CosmicBg {
                 let _not_new = config.backgrounds.remove(pos);
                 true
             } else {
+                existing_layers.append(&mut w.layers);
                 false
             }
         });
 
         for w in config.backgrounds {
-            self.wallpapers.push(CosmicBgWallpaper::new(
+            let mut new_wallpaper = CosmicBgWallpaper::new(
                 w,
                 self.qh.clone(),
                 self.loop_handle.clone(),
                 self.source_tx.clone(),
-            ));
+            );
+            // reuse existing layers from the `All` wallpaper if possible
+            if let Some(l) = self.wallpapers.last_mut().and_then(|w| {
+                if let Some(pos) = w.layers.iter().position(|l| {
+                    let o_name = l.output_info.name.clone().unwrap_or_default();
+                    &new_wallpaper.entry.output == &CosmicBgOutput::Name(o_name)
+                }) {
+                    Some(w.layers.remove(pos))
+                } else {
+                    None
+                }
+            }) {
+                new_wallpaper.layers.push(l);
+            // create a new layer if there is an existing output that matches the added wallpaper
+            } else if let Some((output, output_info)) = self.active_outputs.iter().find_map(|o| {
+                let output_info = match self.output_state.info(&o) {
+                    Some(info) => info,
+                    None => return None,
+                };
+                let o_name = output_info.name.clone().unwrap_or_default();
+                if &new_wallpaper.entry.output == &CosmicBgOutput::Name(o_name) {
+                    Some((o.clone(), output_info.clone()))
+                } else {
+                    None
+                }
+            }) {
+                new_wallpaper
+                    .layers
+                    .push(self.new_layer(output, output_info));
+            };
+            self.wallpapers.push(new_wallpaper);
+            self.wallpapers
+                .sort_by(|a, b| a.entry.output.cmp(&b.entry.output));
+        }
+    }
+
+    pub fn new_layer(&self, output: WlOutput, output_info: OutputInfo) -> CosmicBgLayer {
+        let (width, height) = output_info.logical_size.unwrap_or((0, 0));
+        let (width, height) = (width as u32, height as u32);
+
+        let surface = self.compositor_state.create_surface(&self.qh);
+
+        let layer = self.layer_state.create_layer_surface(
+            &self.qh,
+            surface.clone(),
+            Layer::Background,
+            "wallpaper".into(),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::all());
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_size(width, height);
+        surface.commit();
+        CosmicBgLayer {
+            layer,
+            wl_output: output,
+            output_info,
+            width,
+            height,
+            first_configure: false,
+            pool: None,
         }
     }
 }
@@ -240,54 +312,25 @@ impl OutputHandler for CosmicBg {
     fn new_output(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         wl_output: wl_output::WlOutput,
     ) {
+        self.active_outputs.push(wl_output.clone());
         let output_info = match self.output_state.info(&wl_output) {
             Some(info) => info,
             None => return,
         };
 
-        match self
-            .wallpapers
-            .iter_mut()
-            .find(|w| match &w.entry.output {
-                CosmicBgOutput::All => !w.layers.iter().any(|l| l.wl_output == wl_output),
-                CosmicBgOutput::Name(name) => {
-                    Some(name) == output_info.name.as_ref()
-                        && !w.layers.iter().any(|l| l.wl_output == wl_output)
-                }
-            }) {
-            Some(item) => {
-                let (width, height) = output_info.logical_size.unwrap_or((0, 0));
-                let (width, height) = (width as u32, height as u32);
-
-                let surface = self.compositor_state.create_surface(qh);
-
-                let layer = self.layer_state.create_layer_surface(
-                    qh,
-                    surface.clone(),
-                    Layer::Background,
-                    "wallpaper".into(),
-                    Some(&wl_output),
-                );
-                layer.set_anchor(Anchor::all());
-                layer.set_exclusive_zone(-1);
-                layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-                layer.set_size(width, height);
-                surface.commit();
-                item.layers.push(CosmicBgLayer {
-                    layer,
-                    wl_output,
-                    _output_info: output_info,
-                    width,
-                    height,
-                    first_configure: false,
-                    pool: None,
-                });
+        if let Some(pos) = self.wallpapers.iter().position(|w| match &w.entry.output {
+            CosmicBgOutput::All => !w.layers.iter().any(|l| l.wl_output == wl_output),
+            CosmicBgOutput::Name(name) => {
+                Some(name) == output_info.name.as_ref()
+                    && !w.layers.iter().any(|l| l.wl_output == wl_output)
             }
-            None => return,
-        };
+        }) {
+            let layer = self.new_layer(wl_output, output_info);
+            self.wallpapers[pos].layers.push(layer);
+        }
     }
 
     fn update_output(
@@ -305,18 +348,16 @@ impl OutputHandler for CosmicBg {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.active_outputs.retain(|o| o != &output);
         let output_info = match self.output_state.info(&output) {
             Some(info) => info,
             None => return,
         };
 
-        let item = match self
-            .wallpapers
-            .iter_mut()
-            .find(|w| match &w.entry.output {
-                CosmicBgOutput::All => true,
-                CosmicBgOutput::Name(name) => Some(name) == output_info.name.as_ref(),
-            }) {
+        let item = match self.wallpapers.iter_mut().find(|w| match &w.entry.output {
+            CosmicBgOutput::All => true,
+            CosmicBgOutput::Name(name) => Some(name) == output_info.name.as_ref(),
+        }) {
             Some(item) => item,
             None => return,
         };
@@ -447,8 +488,12 @@ impl CosmicBgWallpaper {
                             (img.width() as f64 * ratio).round() as u32,
                             (img.height() as f64 * ratio).round() as u32,
                         );
-                        let new_image =
-                            image::imageops::resize(img, new_width, new_height, self.entry.filter_method.clone().into());
+                        let new_image = image::imageops::resize(
+                            img,
+                            new_width,
+                            new_height,
+                            self.entry.filter_method.clone().into(),
+                        );
                         image::imageops::replace(
                             &mut final_image,
                             &new_image,
@@ -465,8 +510,12 @@ impl CosmicBgWallpaper {
                             (img.width() as f64 * ratio).round() as u32,
                             (img.height() as f64 * ratio).round() as u32,
                         );
-                        let mut new_image =
-                            image::imageops::resize(img, new_width, new_height, self.entry.filter_method.clone().into());
+                        let mut new_image = image::imageops::resize(
+                            img,
+                            new_width,
+                            new_height,
+                            self.entry.filter_method.clone().into(),
+                        );
                         image::imageops::crop(
                             &mut new_image,
                             (new_width - layer.width) / 2,
@@ -476,9 +525,12 @@ impl CosmicBgWallpaper {
                         )
                         .to_image()
                     }
-                    ScalingMode::Stretch => {
-                        image::imageops::resize(img, layer.width, layer.height, self.entry.filter_method.clone().into())
-                    }
+                    ScalingMode::Stretch => image::imageops::resize(
+                        img,
+                        layer.width,
+                        layer.height,
+                        self.entry.filter_method.clone().into(),
+                    ),
                 },
                 None => continue,
             };

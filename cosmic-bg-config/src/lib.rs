@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
-use std::{env, path::{Path, PathBuf}, str::FromStr, borrow::Cow};
+use std::{
+    borrow::Cow,
+    env,
+    path::{Path, PathBuf},
+};
 
 use cosmic_config::{Config, ConfigGet};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the panel's ouput
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 pub enum CosmicBgOutput {
-    /// show panel on all outputs
-    All,
     /// show panel on a specific output
     Name(String),
+    /// show panel on all outputs
+    All,
 }
 
 impl ToString for CosmicBgOutput {
@@ -37,18 +41,21 @@ pub enum CosmicBgImgSource {
 impl CosmicBgImgSource {
     pub fn as_path<'a>(&'a self) -> Cow<'a, Path> {
         match &self {
-            CosmicBgImgSource::Wallpapers => if let Some(path) = env::var("XDG_PICTURES_DIR")
-                .ok()
-                .map(|s| PathBuf::from(s))
-                .or_else(|| xdg_user::pictures().unwrap_or(None))
-                .map(|mut pics_dir| {
-                    pics_dir.push("Wallpapers");
-                    pics_dir
-                }) {
+            CosmicBgImgSource::Wallpapers => {
+                if let Some(path) = env::var("XDG_PICTURES_DIR")
+                    .ok()
+                    .map(|s| PathBuf::from(s))
+                    .or_else(|| xdg_user::pictures().unwrap_or(None))
+                    .map(|mut pics_dir| {
+                        pics_dir.push("Wallpapers");
+                        pics_dir
+                    })
+                {
                     Cow::Owned(path)
                 } else {
                     Cow::Borrowed(Path::new("/usr/share/backgrounds/pop/"))
-                },
+                }
+            }
             CosmicBgImgSource::Path(p) => Cow::Borrowed(Path::new(p)),
         }
     }
@@ -147,16 +154,23 @@ impl CosmicBgConfig {
     /// load config with the provided name
     pub fn load(config: &Config) -> Result<Self, cosmic_config::Error> {
         let entry_keys = config.get::<Vec<CosmicBgOutput>>(BG_KEY)?;
-        let backgrounds: Vec<_> = entry_keys
+        let mut backgrounds: Vec<_> = entry_keys
             .into_iter()
             .filter_map(|c| config.get::<CosmicBgEntry>(&c.to_string()).ok())
             .collect();
 
+        let def = Self::default();
         if backgrounds.is_empty() {
             eprintln!("No wallpapers configured. Using defaults.");
             // TODO try to use the default schema before falling back
-            Ok(Self::default())
+            Ok(def)
         } else {
+            if backgrounds.iter().all(|e| e.output != CosmicBgOutput::All) {
+                // add the default all wallpaper if all is not already present
+                if let Some(def_all) = def.backgrounds.iter().find(|e| e.output == CosmicBgOutput::All) {
+                    backgrounds.push(def_all.clone());
+                }
+            }
             Ok(Self { backgrounds })
         }
     }
