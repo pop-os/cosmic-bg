@@ -12,6 +12,6 @@ default-schema-target := install-dir / 'cosmic' / appid
 install:
     install -Dm0644 {{desktop-src}} {{desktop-dst}}
     install -Dm0644 {{metainfo-src}} {{metainfo-dst}}
-    find v1 -exec install -Dm0644 {} {{default-schema-target}}/{} \;
+    find v1 -type f -exec install -Dm0644 {} {{default-schema-target}}/{} \;
 uninstall:
     rm {{desktop-dst}} {{metainfo-dst}}
