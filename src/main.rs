@@ -580,9 +580,8 @@ impl CosmicBgWallpaper {
 
     fn load_images(&mut self) {
         let mut image_queue = VecDeque::new();
-        let path_source = self.entry.source.as_path();
-        if path_source.is_dir() {
-            for img_path in WalkDir::new(path_source)
+        if self.entry.source.is_dir() {
+            for img_path in WalkDir::new(&self.entry.source)
                 .follow_links(true)
                 .into_iter()
                 .filter_map(|e| e.ok())
@@ -590,8 +589,8 @@ impl CosmicBgWallpaper {
             {
                 image_queue.push_front(img_path.path().into());
             }
-        } else if path_source.is_file() {
-            image_queue.push_front(path_source.into_owned());
+        } else if self.entry.source.is_file() {
+            image_queue.push_front(self.entry.source.clone());
         }
         {
             let image_slice = image_queue.make_contiguous();

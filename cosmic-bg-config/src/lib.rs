@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
 use std::{
-    borrow::Cow,
-    env,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use cosmic_config::{Config, ConfigGet};
@@ -28,46 +26,13 @@ impl ToString for CosmicBgOutput {
     }
 }
 
-/// Configuration for the panel's ouput
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub enum CosmicBgImgSource {
-    /// pull images from the $HOME/Pictures/Wallpapers directory
-    Wallpapers,
-    /// pull images from a specific directory or file
-    Path(String),
-}
-
-impl CosmicBgImgSource {
-    pub fn as_path<'a>(&'a self) -> Cow<'a, Path> {
-        match &self {
-            CosmicBgImgSource::Wallpapers => {
-                if let Some(path) = env::var("XDG_PICTURES_DIR")
-                    .ok()
-                    .map(|s| PathBuf::from(s))
-                    .or_else(|| xdg_user::pictures().unwrap_or(None))
-                    .map(|mut pics_dir| {
-                        pics_dir.push("Wallpapers");
-                        pics_dir
-                    })
-                {
-                    Cow::Owned(path)
-                } else {
-                    Cow::Borrowed(Path::new("/usr/share/backgrounds/pop/"))
-                }
-            }
-            CosmicBgImgSource::Path(p) => Cow::Borrowed(Path::new(p)),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgEntry {
     /// the configured output
     pub output: CosmicBgOutput,
     /// the configured image source
-    pub source: CosmicBgImgSource,
+    pub source: PathBuf,
     /// whether the images should be filtered by the active theme
     pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
