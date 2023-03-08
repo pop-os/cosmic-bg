@@ -54,23 +54,6 @@ impl CosmicBgImgSource {
     }
 }
 
-impl Into<PathBuf> for CosmicBgImgSource {
-    fn into(self) -> PathBuf {
-        match self {
-            CosmicBgImgSource::Wallpapers => env::var("XDG_PICTURES_DIR")
-                .ok()
-                .map(|s| PathBuf::from(s))
-                .or_else(|| xdg_user::pictures().unwrap_or(None))
-                .map(|mut pics_dir| {
-                    pics_dir.push("Wallpapers");
-                    pics_dir
-                }),
-            CosmicBgImgSource::Path(p) => PathBuf::from_str(&p).ok(),
-        }
-        .unwrap_or_else(|| "/usr/share/backgrounds/pop/".into())
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CosmicBgEntry {
