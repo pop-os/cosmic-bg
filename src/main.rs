@@ -95,9 +95,7 @@ fn main() -> anyhow::Result<()> {
         Ok(helper) => {
             let watcher = helper
                 .watch(move |config_helper, keys| {
-                    println!("Changed: {:?}", keys);
                     for key in keys.iter() {
-                        println!(" - {} = {:?}", key, config_helper.get::<ron::Value>(key));
                         if key == cosmic_bg_config::BG_KEY {
                             let new_config = CosmicBgConfig::load(config_helper).unwrap();
                             cfg_tx.send(BgConfigUpdate::NewConfig(new_config)).unwrap();
