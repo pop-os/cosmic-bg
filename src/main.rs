@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0-only
 mod img_source;
 
-use std::{collections::VecDeque, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::{hash_map::DefaultHasher, VecDeque},
+    fs,
+    hash::Hash,
+    hash::Hasher,
+    num::NonZeroU32,
+    path::PathBuf,
+    time::Duration,
+};
 
 use cosmic_bg_config::{
     CosmicBgConfig, CosmicBgEntry, CosmicBgOutput, SamplingMethod, ScalingMode,
@@ -172,6 +180,7 @@ pub struct CosmicBgLayer {
     output_info: OutputInfo,
     pool: Option<SlotPool>,
     first_configure: bool,
+    last_draw: Option<u64>,
     width: u32,
     height: u32,
 }
@@ -276,6 +285,7 @@ impl CosmicBg {
             width,
             height,
             first_configure: false,
+            last_draw: None,
             pool: None,
         }
     }
@@ -465,89 +475,109 @@ impl CosmicBgWallpaper {
     }
 
     pub fn draw(&mut self) {
-        for layer in self.layers.iter_mut().filter(|l| !l.first_configure) {
-            let img = match self.cur_image.as_ref() {
-                Some(img) => match self.entry.scaling_mode {
-                    ScalingMode::Fit(color) => {
-                        let u8_color = [
-                            (u8::MAX as f32 * color[0]).round() as u8,
-                            (u8::MAX as f32 * color[1]).round() as u8,
-                            (u8::MAX as f32 * color[2]).round() as u8,
-                        ];
-                        let mut final_image = image::ImageBuffer::from_pixel(
-                            layer.width,
-                            layer.height,
-                            *image::Rgb::from_slice(&u8_color),
-                        );
-
-                        let ratio = (layer.width as f64 / img.width() as f64)
-                            .min(layer.height as f64 / img.height() as f64);
-                        let (new_width, new_height) = (
-                            (img.width() as f64 * ratio).round() as u32,
-                            (img.height() as f64 * ratio).round() as u32,
-                        );
-                        let new_image = image::imageops::resize(
-                            img,
-                            new_width,
-                            new_height,
-                            self.entry.filter_method.clone().into(),
-                        );
-                        image::imageops::replace(
-                            &mut final_image,
-                            &new_image,
-                            ((layer.width - new_width) / 2).into(),
-                            ((layer.height - new_height) / 2).into(),
-                        );
-
-                        final_image
-                    }
-                    ScalingMode::Zoom => {
-                        let ratio = (layer.width as f64 / img.width() as f64)
-                            .max(layer.height as f64 / img.height() as f64);
-                        let (new_width, new_height) = (
-                            (img.width() as f64 * ratio).round() as u32,
-                            (img.height() as f64 * ratio).round() as u32,
-                        );
-                        let mut new_image = image::imageops::resize(
-                            img,
-                            new_width,
-                            new_height,
-                            self.entry.filter_method.clone().into(),
-                        );
-                        image::imageops::crop(
-                            &mut new_image,
-                            (new_width - layer.width) / 2,
-                            (new_height - layer.height) / 2,
-                            layer.width,
-                            layer.height,
-                        )
-                        .to_image()
-                    }
-                    ScalingMode::Stretch => image::imageops::resize(
-                        img,
-                        layer.width,
-                        layer.height,
-                        self.entry.filter_method.clone().into(),
-                    ),
-                },
-                None => continue,
-            };
-
-            let width = layer.width;
-            let height = layer.height;
-            let stride = layer.width as i32 * 4;
-
+        let mut cur_img: Option<RgbImage> = self.cur_image.clone();
+        let hash = self.cur_image.as_ref().map(|img| {
+            let mut hasher = DefaultHasher::new();
+            img.hash(&mut hasher);
+            hasher.finish()
+        });
+        for layer in self
+            .layers
+            .iter_mut()
+            .filter(|l| !l.first_configure && l.last_draw != hash)
+        {
             let pool = match layer.pool.as_mut() {
                 Some(p) => p,
                 None => continue,
             };
+            if cur_img
+                .as_ref()
+                .map(|img| img.width() != layer.width as u32 || img.height() != layer.height as u32)
+                .unwrap_or(true)
+            {
+                cur_img = match cur_img.take() {
+                    Some(img) => match self.entry.scaling_mode {
+                        ScalingMode::Fit(color) => {
+                            let u8_color = [
+                                (u8::MAX as f32 * color[0]).round() as u8,
+                                (u8::MAX as f32 * color[1]).round() as u8,
+                                (u8::MAX as f32 * color[2]).round() as u8,
+                            ];
+                            let mut final_image = image::ImageBuffer::from_pixel(
+                                layer.width,
+                                layer.height,
+                                *image::Rgb::from_slice(&u8_color),
+                            );
+
+                            let ratio = (layer.width as f64 / img.width() as f64)
+                                .min(layer.height as f64 / img.height() as f64);
+                            let (new_width, new_height) = (
+                                (img.width() as f64 * ratio).round() as u32,
+                                (img.height() as f64 * ratio).round() as u32,
+                            );
+                            
+                            let new_image = image::imageops::resize(
+                                &img,
+                                new_width,
+                                new_height,
+                                self.entry.filter_method.clone().into(),
+                            );
+                            image::imageops::replace(
+                                &mut final_image,
+                                &new_image,
+                                ((layer.width - new_width) / 2).into(),
+                                ((layer.height - new_height) / 2).into(),
+                            );
+
+                            Some(final_image)
+                        }
+                        ScalingMode::Zoom => {
+                            let ratio = (layer.width as f64 / img.width() as f64)
+                                .max(layer.height as f64 / img.height() as f64);
+                            let (new_width, new_height) = (
+                                (img.width() as f64 * ratio).round() as u32,
+                                (img.height() as f64 * ratio).round() as u32,
+                            );
+                            let mut new_image = image::imageops::resize(
+                                &img,
+                                new_width,
+                                new_height,
+                                self.entry.filter_method.clone().into(),
+                            );
+                            Some(
+                                image::imageops::crop(
+                                    &mut new_image,
+                                    (new_width - layer.width) / 2,
+                                    (new_height - layer.height) / 2,
+                                    layer.width,
+                                    layer.height,
+                                )
+                                .to_image(),
+                            )
+                        }
+                        ScalingMode::Stretch => Some(image::imageops::resize(
+                            &img,
+                            layer.width,
+                            layer.height,
+                            self.entry.filter_method.clone().into(),
+                        )),
+                    },
+                    None => continue,
+                };
+            }
+
+            let img = cur_img.as_ref().unwrap();
+            let width = layer.width;
+            let height = layer.height;
+            let stride = layer.width as i32 * 4;
+            layer.last_draw = hash;
 
             let (buffer, canvas) = pool
                 .create_buffer(
                     width as i32,
                     height as i32,
                     stride,
-                    wl_shm::Format::Argb8888,
+                    wl_shm::Format::Xrgb8888,
                 )
                 .expect("create buffer");
             // Draw to the window:
@@ -556,7 +586,6 @@ impl CosmicBgWallpaper {
                     .chunks_exact_mut(4)
                     .zip(img.pixels())
                     .for_each(|(dest, source)| {
-                        dest[3] = 0xFF_u8.to_le();
                         dest[2] = source.0[0].to_le();
                         dest[1] = source.0[1].to_le();
                         dest[0] = source.0[2].to_le();
@@ -577,6 +606,7 @@ impl CosmicBgWallpaper {
     }
 
     fn load_images(&mut self) {
+        println!("Loading images from {:?}", self.entry.source);
         let mut image_queue = VecDeque::new();
         if self.entry.source.is_dir() {
             for img_path in WalkDir::new(&self.entry.source)
