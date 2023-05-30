@@ -165,6 +165,11 @@ impl CosmicBgConfig {
         }
     }
 
+    /// Applies the entry for the given output.
+    pub fn set_entry(config: &Config, entry: CosmicBgEntry) {
+        let _res = config.set(&entry.output.to_string(), entry);
+    }
+
     /// Convenience function for cosmic-config
     ///
     /// # Errors
