@@ -3,11 +3,31 @@
 use cosmic_config::{Config, ConfigGet, ConfigSet};
 use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+};
+
+pub const NAME: &str = "com.system76.CosmicBackground";
+pub const BG_KEY: &str = "backgrounds";
+
+/// Fallback in case config and default schema can't be loaded
+pub fn fallback() -> CosmicBgEntry {
+    CosmicBgEntry {
+        output: CosmicBgOutput::All,
+        source: PathBuf::from("/usr/share/backgrounds/pop/"),
+        filter_by_theme: true,
+        rotation_frequency: 3600,
+        filter_method: FilterMethod::default(),
+        scaling_mode: ScalingMode::default(),
+        sampling_method: SamplingMethod::default(),
+    }
+}
 
 /// Configuration for the panel's ouput
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Deserialize, Serialize, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
+#[must_use]
 pub enum CosmicBgOutput {
     /// show panel on a specific output
     Name(String),
@@ -115,29 +135,27 @@ impl CosmicBgEntry {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[must_use]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct CosmicBgConfig {
-    /// the configured wallpapers
+    pub outputs: HashSet<CosmicBgOutput>,
     pub backgrounds: Vec<CosmicBgEntry>,
 }
 
-// Fallback in case config and default schema can't be loaded
-impl Default for CosmicBgConfig {
-    fn default() -> Self {
-        ron::de::from_str(include_str!("../config.ron")).unwrap()
-    }
-}
-
-pub const NAME: &str = "com.system76.CosmicBackground";
-pub const BG_KEY: &str = "backgrounds";
-
 impl CosmicBgConfig {
+    /// Creates a config with fallback defaults.
+    pub fn fallback() -> Self {
+        Self {
+            outputs: HashSet::new(),
+            backgrounds: vec![fallback()],
+        }
+    }
+
     /// Convenience function for cosmic-config
     ///
     /// # Errors
     ///
-    /// Will fail if cosmic-config paths are missing or cannot be created.
+    /// Fails if cosmic-config paths are missing or cannot be created.
     pub fn helper() -> Result<Config, cosmic_config::Error> {
         Config::new(NAME, 1)
     }
@@ -146,53 +164,93 @@ impl CosmicBgConfig {
     ///
     /// # Errors
     ///
-    /// Will fail if invalid values are stored within cosmic-config at time of parsing them.
-    pub fn load(config: &Config) -> Result<Self, cosmic_config::Error> {
-        let mut backgrounds = Self::outputs(config)?
-            .into_iter()
-            .filter_map(|output| Self::entry(config, &output.to_string()).ok())
-            .collect::<Vec<_>>();
+    /// Fails if invalid iter are stored within cosmic-config at time of parsing them.
+    pub fn load(context: &Config) -> Result<Self, cosmic_config::Error> {
+        let mut config = Self::default();
 
-        let def = Self::default();
-        if backgrounds.is_empty() {
-            eprintln!("No wallpapers configured. Using defaults.");
-            // TODO try to use the default schema before falling back
-            Ok(def)
-        } else {
-            if backgrounds.iter().all(|e| e.output != CosmicBgOutput::All) {
-                // add the default all wallpaper if all is not already present
-                if let Some(def_all) = def
-                    .backgrounds
-                    .iter()
-                    .find(|e| e.output == CosmicBgOutput::All)
-                {
-                    backgrounds.push(def_all.clone());
-                }
-            }
-            Ok(Self { backgrounds })
+        let entries = Self::load_outputs(context)?
+            .into_iter()
+            .filter_map(|output| Self::load_entry(context, &output.to_string()).ok());
+
+        for entry in entries {
+            config.outputs.insert(entry.output.clone());
+            config.backgrounds.push(entry);
         }
+
+        // add the default all wallpaper if all is not already present
+        if config.backgrounds.is_empty()
+            || config
+                .backgrounds
+                .iter()
+                .all(|e| e.output != CosmicBgOutput::All)
+        {
+            eprintln!("No wallpapers configured. Using defaults.");
+            config.backgrounds.push(fallback());
+        }
+
+        Ok(config)
     }
 
-    /// Get the entry for a given output from cosmic-config.
+    /// Get the entry for a given output.
+    #[must_use]
+    pub fn entry(&self, output: &CosmicBgOutput) -> Option<&CosmicBgEntry> {
+        self.backgrounds
+            .iter()
+            .find(|entry| &entry.output == output)
+    }
+
+    /// get a mutable entry for a given output.
+    #[must_use]
+    pub fn entry_mut(&mut self, output: &CosmicBgOutput) -> Option<&mut CosmicBgEntry> {
+        self.backgrounds
+            .iter_mut()
+            .find(|entry| &entry.output == output)
+    }
+
+    /// Get the entry for an output from cosmic-config.
     ///
     /// # Errors
     ///
-    /// Will fail if the config is missing or fails to parse.
-    pub fn entry(config: &Config, output: &str) -> Result<CosmicBgEntry, cosmic_config::Error> {
+    /// Fails if the config is missing or fails to parse.
+    pub fn load_entry(
+        config: &Config,
+        output: &str,
+    ) -> Result<CosmicBgEntry, cosmic_config::Error> {
         config.get::<CosmicBgEntry>(output)
     }
 
     /// Applies the entry for the given output to cosmic-config.
-    pub fn set_entry(config: &Config, entry: CosmicBgEntry) {
-        let _res = config.set(&entry.output.to_string(), entry);
+    ///
+    /// # Errors
+    ///
+    /// Fails if the config could not be set in cosmic-config.
+    pub fn set_entry(
+        &mut self,
+        config: &Config,
+        entry: CosmicBgEntry,
+    ) -> Result<(), cosmic_config::Error> {
+        config.set(&entry.output.to_string(), entry.clone())?;
+
+        if let Some(old) = self.entry_mut(&entry.output) {
+            *old = entry;
+        } else {
+            self.outputs.insert(entry.output.clone());
+            self.backgrounds.push(entry);
+        }
+
+        if let Err(why) = config.set(BG_KEY, self.outputs.iter().collect::<Vec<_>>()) {
+            eprintln!("failed to update outputs: {why:?}");
+        }
+
+        Ok(())
     }
 
     /// Get all stored outputs from cosmic-config.
     ///
     /// # Errors
     ///
-    /// Will fail if the config is missing or fails to parse.
-    pub fn outputs(config: &Config) -> Result<Vec<CosmicBgOutput>, cosmic_config::Error> {
+    /// Fails if the config is missing or fails to parse.
+    pub fn load_outputs(config: &Config) -> Result<Vec<CosmicBgOutput>, cosmic_config::Error> {
         config.get::<Vec<CosmicBgOutput>>(BG_KEY)
     }
 }

@@ -96,13 +96,13 @@ fn main() -> anyhow::Result<()> {
                 Ok(conf) => conf,
                 Err(err) => {
                     eprintln!("Config file error, falling back to defaults: {err:?}");
-                    CosmicBgConfig::default()
+                    CosmicBgConfig::fallback()
                 }
             }
         }
         Err(err) => {
             eprintln!("Config file error, falling back to defaults: {err:?}");
-            CosmicBgConfig::default()
+            CosmicBgConfig::fallback()
         }
     };
 
