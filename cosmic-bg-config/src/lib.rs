@@ -133,17 +133,25 @@ pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BG_KEY: &str = "backgrounds";
 
 impl CosmicBgConfig {
-    /// load config with the provided name
+    /// Convenience function for cosmic-config
+    ///
+    /// # Errors
+    ///
+    /// Will fail if cosmic-config paths are missing or cannot be created.
+    pub fn helper() -> Result<Config, cosmic_config::Error> {
+        Config::new(NAME, 1)
+    }
+
+    /// Load config with the provided name from cosmic-config.
     ///
     /// # Errors
     ///
     /// Will fail if invalid values are stored within cosmic-config at time of parsing them.
     pub fn load(config: &Config) -> Result<Self, cosmic_config::Error> {
-        let entry_keys = config.get::<Vec<CosmicBgOutput>>(BG_KEY)?;
-        let mut backgrounds: Vec<_> = entry_keys
+        let mut backgrounds = Self::outputs(config)?
             .into_iter()
-            .filter_map(|c| config.get::<CosmicBgEntry>(&c.to_string()).ok())
-            .collect();
+            .filter_map(|output| Self::entry(config, &output.to_string()).ok())
+            .collect::<Vec<_>>();
 
         let def = Self::default();
         if backgrounds.is_empty() {
@@ -165,17 +173,26 @@ impl CosmicBgConfig {
         }
     }
 
-    /// Applies the entry for the given output.
+    /// Get the entry for a given output from cosmic-config.
+    ///
+    /// # Errors
+    ///
+    /// Will fail if the config is missing or fails to parse.
+    pub fn entry(config: &Config, output: &str) -> Result<CosmicBgEntry, cosmic_config::Error> {
+        config.get::<CosmicBgEntry>(output)
+    }
+
+    /// Applies the entry for the given output to cosmic-config.
     pub fn set_entry(config: &Config, entry: CosmicBgEntry) {
         let _res = config.set(&entry.output.to_string(), entry);
     }
 
-    /// Convenience function for cosmic-config
+    /// Get all stored outputs from cosmic-config.
     ///
     /// # Errors
     ///
-    /// Will fail if cosmic-config paths are missing or cannot be created.
-    pub fn helper() -> Result<Config, cosmic_config::Error> {
-        Config::new(NAME, 1)
+    /// Will fail if the config is missing or fails to parse.
+    pub fn outputs(config: &Config) -> Result<Vec<CosmicBgOutput>, cosmic_config::Error> {
+        config.get::<Vec<CosmicBgOutput>>(BG_KEY)
     }
 }
