@@ -47,27 +47,38 @@ pub fn gradient(
     let width = f64::from(width);
     let height = f64::from(height);
 
-    let (dmin, dmax) = grad.domain();
-    let angle = f64::from(gradient.radius.to_radians());
-
     // Map t which is in range [a, b] to range [c, d]
     #[allow(clippy::items_after_statements)]
     fn remap(t: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
         (t - a) * ((d - c) / (b - a)) + c
     }
 
+    #[allow(clippy::items_after_statements)]
+    const SCALE: f64 = 0.015;
+
+    let positioner: Box<dyn Fn(u32, u32) -> f64> = match gradient.radius as u16 {
+        0 => Box::new(|x, _y| 1.0 - (x as f64 / width as f64)),
+        90 => Box::new(|_x, y| 1.0 - (y as f64 / height as f64)),
+        180 => Box::new(|x, _y| x as f64 / width as f64),
+        270 => Box::new(|_x, y| y as f64 / height as f64),
+        _ => Box::new(|x, y| {
+            let (dmin, dmax) = grad.domain();
+            let angle = f64::from(gradient.radius.to_radians());
+            let (x, y) = (f64::from(x) - width / SCALE, f64::from(y) - height / SCALE);
+
+            remap(
+                x * f64::cos(angle) - y * f64::sin(angle),
+                -width / SCALE,
+                width / SCALE,
+                dmin,
+                dmax,
+            )
+        }),
+    };
+
     #[allow(clippy::cast_possible_truncation)]
     for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-        let (x, y) = (f64::from(x) - width / 2.0, f64::from(y) - height / 2.0);
-        let pos = remap(
-            x * f64::cos(angle) - y * f64::sin(angle),
-            -width / 2.0,
-            width / 2.0,
-            dmin,
-            dmax,
-        );
-
-        let Color { r, g, b, .. } = grad.at(pos);
+        let Color { r, g, b, .. } = grad.at(positioner(x, y));
 
         *pixel = image::Rgb([r as f32, g as f32, b as f32]);
     }

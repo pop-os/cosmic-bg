@@ -412,13 +412,21 @@ impl LayerShellHandler for CosmicBg {
                 w_layer.height = h;
 
                 if let Some(pool) = w_layer.pool.as_mut() {
-                    pool.resize(w as usize * h as usize * 4)
-                        .expect("failed to resize the pool");
+                    if let Err(why) = pool.resize(w as usize * h as usize * 4) {
+                        tracing::error!(?why, "failed to resize pool");
+                        continue;
+                    }
                 } else {
-                    w_layer.pool.replace(
-                        SlotPool::new(w as usize * h as usize * 4, &self.shm_state)
-                            .expect("Failed to create pool"),
-                    );
+                    match SlotPool::new(w as usize * h as usize * 4, &self.shm_state) {
+                        Ok(pool) => {
+                            w_layer.pool.replace(pool);
+                        }
+
+                        Err(why) => {
+                            tracing::error!(?why, "failed to create pool");
+                            continue;
+                        }
+                    }
                 }
 
                 if w_layer.first_configure {

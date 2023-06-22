@@ -267,28 +267,21 @@ impl Wallpaper {
                             return TimeoutAction::Drop; // Drop if no item found for this timer
                         };
 
-                        let mut img = None;
-
-                        while img.is_none() && item.image_queue.front().is_some() {
-                            let next = item.image_queue.pop_front().unwrap();
-
-                            img = match ImageReader::open(&next) {
-                                Ok(img) => match img.decode() {
-                                    Ok(img) => Some(img),
-                                    Err(_) => None,
+                        while let Some(next) = item.image_queue.pop_front() {
+                            let image = match ImageReader::open(&next) {
+                                Ok(image) => match image.decode() {
+                                    Ok(image) => image,
+                                    Err(_) => continue,
                                 },
-                                Err(_) => None,
+                                Err(_) => continue,
                             };
-                            if let Some(image) = img.take() {
-                                item.image_queue.push_back(next);
-                                item.current_image.replace(image);
-                                item.new_image = true;
-                                item.draw();
 
-                                return TimeoutAction::ToDuration(Duration::from_secs(
-                                    rotation_freq,
-                                ));
-                            }
+                            item.image_queue.push_back(next);
+                            item.current_image.replace(image);
+                            item.new_image = true;
+                            item.draw();
+
+                            return TimeoutAction::ToDuration(Duration::from_secs(rotation_freq));
                         }
 
                         TimeoutAction::Drop
