@@ -3,8 +3,9 @@
 use crate::{CosmicBg, CosmicBgLayer};
 
 use std::{
-    collections::VecDeque,
+    collections::{hash_map::DefaultHasher, VecDeque},
     fs,
+    hash::{Hash, Hasher},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -75,10 +76,16 @@ impl Wallpaper {
         let start = Instant::now();
         let mut cur_resized_img: Option<DynamicImage> = None;
 
+        let hash = self.current_image.as_ref().map(|image| {
+            let mut hasher = DefaultHasher::new();
+            image.as_bytes().hash(&mut hasher);
+            hasher.finish()
+        });
+
         for layer in self
             .layers
             .iter_mut()
-            .filter(|layer| !layer.first_configure)
+            .filter(|layer| !layer.first_configure || layer.last_draw != hash)
         {
             let Some(pool) = layer.pool.as_mut() else {
                 continue
@@ -141,6 +148,8 @@ impl Wallpaper {
 
                 cur_resized_img.as_ref().unwrap()
             };
+
+            layer.last_draw = hash;
 
             let buffer_result = crate::draw::canvas(
                 pool,

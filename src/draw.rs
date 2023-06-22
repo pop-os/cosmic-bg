@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0-only'
 
 use crate::{CosmicBg, CosmicBgLayer};
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 use sctk::{
     reexports::client::{protocol::wl_shm, QueueHandle},
     shell::WaylandSurface,
@@ -87,10 +87,10 @@ pub fn xrgb21010_canvas(canvas: &mut [u8], image: &DynamicImage) {
 
 /// Draws the image on an 8-bit canvas.
 pub fn xrgb888_canvas(canvas: &mut [u8], image: &DynamicImage) {
-    for (pos, pixel) in image.to_rgb8().pixels().enumerate() {
+    for (pos, (_, _, pixel)) in image.pixels().enumerate() {
         let indice = pos * 4;
 
-        let [r, g, b] = pixel.0;
+        let [r, g, b, _] = pixel.0;
 
         let r = u32::from(r) << 16;
         let g = u32::from(g) << 8;

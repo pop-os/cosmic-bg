@@ -7,7 +7,7 @@ use std::{borrow::Cow, collections::HashSet, path::PathBuf};
 
 pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";
-pub const DEFAULT_BACKGROUND: &str = "output.all";
+pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Setters)]
@@ -202,12 +202,9 @@ impl Config {
 
         let entries = Self::load_outputs(context)
             .into_iter()
-            .filter_map(|output| {
-                dbg!(Self::load_entry(context, &["output.", &output].concat())).ok()
-            });
+            .filter_map(|output| Self::load_entry(context, &["output.", &output].concat()).ok());
 
         for entry in entries {
-            tracing::debug!("loading background: {}", entry.output);
             self.outputs.insert(entry.output.clone());
             self.backgrounds.push(entry);
         }
@@ -259,7 +256,9 @@ impl Config {
             ["output.", &entry.output].concat()
         };
 
-        config.set(&output_key, entry.clone())?;
+        if config.get(&output_key).ok().as_ref() != Some(&entry) {
+            config.set(&output_key, entry.clone())?;
+        }
 
         if let Some(old) = self.entry_mut(&output_key) {
             *old = entry;
@@ -267,13 +266,12 @@ impl Config {
             self.backgrounds.push(entry);
         }
 
-        tracing::debug!(value = ?self.outputs, "writing to backgrounds config");
+        let new_value = self.outputs.iter().cloned().collect::<Vec<_>>();
 
-        if let Err(why) = config.set::<Vec<String>>(
-            BACKGROUNDS,
-            self.outputs.iter().cloned().collect::<Vec<_>>(),
-        ) {
-            tracing::error!(?why, "failed to update outputs");
+        if config.get::<Vec<String>>(BACKGROUNDS).ok().as_deref() != Some(&new_value) {
+            if let Err(why) = config.set::<Vec<String>>(BACKGROUNDS, new_value) {
+                tracing::error!(?why, "failed to update outputs");
+            }
         }
 
         Ok(())
@@ -305,6 +303,10 @@ impl Config {
     }
 
     pub fn set_same_on_all(config: &CosmicConfig, value: bool) -> Result<(), cosmic_config::Error> {
-        config.set(SAME_ON_ALL, value)
+        if Self::load_same_on_all(config) != value {
+            return config.set(SAME_ON_ALL, value);
+        }
+
+        Ok(())
     }
 }

@@ -44,6 +44,7 @@ pub struct CosmicBgLayer {
     first_configure: bool,
     width: u32,
     height: u32,
+    last_draw: Option<u64>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -82,12 +83,14 @@ fn main() -> color_eyre::Result<()> {
             event_loop
                 .handle()
                 .insert_source(source, |(config_helper, keys), (), state| {
+                    let mut changes_applied = false;
+
                     for key in &keys {
                         match key.as_str() {
                             cosmic_bg_config::BACKGROUNDS => {
                                 tracing::debug!("updating backgrounds");
                                 state.config.load_backgrounds(&config_helper);
-                                state.apply_backgrounds();
+                                changes_applied = true;
                             }
 
                             cosmic_bg_config::DEFAULT_BACKGROUND => {
@@ -96,7 +99,7 @@ fn main() -> color_eyre::Result<()> {
 
                                 if state.config.default_background != entry {
                                     state.config.default_background = entry;
-                                    state.apply_backgrounds();
+                                    changes_applied = true;
                                 }
                             }
 
@@ -110,27 +113,35 @@ fn main() -> color_eyre::Result<()> {
                                     state.config.load_backgrounds(&config_helper);
                                 }
                                 state.config.outputs.clear();
-                                state.apply_backgrounds();
+                                changes_applied = true;
                             }
 
                             _ => {
                                 tracing::debug!(key, "key modified");
-                                if let Ok(entry) = config_helper.get::<Entry>(key) {
-                                    state.config.backgrounds.push(entry.clone());
-                                    state.config.outputs.insert(key.to_string());
-                                    state.apply_backgrounds();
+
+                                if let Some(output) = key.strip_prefix("output.") {
+                                    if let Ok(new_entry) = config_helper.get::<Entry>(key) {
+                                        if let Some(existing) = state.config.entry_mut(output) {
+                                            *existing = new_entry;
+                                            changes_applied = true;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
-                    tracing::debug!(
-                        same_on_all = state.config.same_on_all,
-                        outputs = ?state.config.outputs,
-                        backgrounds = ?state.config.backgrounds,
-                        default_background = ?state.config.default_background.source,
-                        "new state"
-                    );
+                    if changes_applied {
+                        state.apply_backgrounds();
+
+                        tracing::debug!(
+                            same_on_all = state.config.same_on_all,
+                            outputs = ?state.config.outputs,
+                            backgrounds = ?state.config.backgrounds,
+                            default_background = ?state.config.default_background.source,
+                            "new state"
+                        );
+                    }
                 })
                 .expect("failed to insert config watching source into event loop");
 
@@ -293,6 +304,7 @@ impl CosmicBg {
             height,
             first_configure: false,
             pool: None,
+            last_draw: None,
         }
     }
 }
