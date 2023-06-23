@@ -39,6 +39,10 @@ check *args:
 # Runs a clippy check with JSON message format
 check-json: (check '--message-format=json')
 
+# Run with debug logs
+run *args:
+    env RUST_LOG=debug RUST_BACKTRACE=1 cargo run --release {{args}}
+
 # Installs files
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}

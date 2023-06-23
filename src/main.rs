@@ -1,125 +1,189 @@
 // SPDX-License-Identifier: MPL-2.0-only
+
+mod colored;
+mod draw;
 mod img_source;
+mod scaler;
+mod wallpaper;
 
-use std::{
-    collections::{hash_map::DefaultHasher, VecDeque},
-    fs,
-    hash::Hash,
-    hash::Hasher,
-    num::NonZeroU32,
-    path::PathBuf,
-    time::Duration,
-};
-
-use cosmic_bg_config::{Config, Entry, FilterMethod, Output, SamplingMethod, ScalingMode};
+use cosmic_bg_config::{Config, Entry};
 use cosmic_config::{calloop::ConfigWatchSource, ConfigGet};
-use fast_image_resize as fr;
-use image::{io::Reader as ImageReader, Pixel, RgbImage};
-use itertools::Itertools;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use rand::{seq::SliceRandom, thread_rng};
+use eyre::Context;
 use sctk::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
     output::{OutputHandler, OutputInfo, OutputState},
     reexports::{
-        calloop::{
-            self,
-            timer::{TimeoutAction, Timer},
-            EventLoop, RegistrationToken,
-        },
+        calloop,
         client::{
             globals::registry_queue_init,
             protocol::{
                 wl_output::{self, WlOutput},
-                wl_shm, wl_surface,
+                wl_surface,
             },
             Connection, QueueHandle, WaylandSource,
         },
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    shell::{
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
-        WaylandSurface,
+    shell::wlr_layer::{
+        Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+        LayerSurfaceConfigure,
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
-use walkdir::WalkDir;
+use tracing_subscriber::prelude::*;
+use wallpaper::Wallpaper;
 
-fn main() -> anyhow::Result<()> {
-    let conn = Connection::connect_to_env().unwrap();
+#[derive(Debug)]
+pub struct CosmicBgLayer {
+    layer: LayerSurface,
+    wl_output: WlOutput,
+    output_info: OutputInfo,
+    pool: Option<SlotPool>,
+    first_configure: bool,
+    width: u32,
+    height: u32,
+    last_draw: Option<u64>,
+}
 
-    let mut event_loop: EventLoop<'static, CosmicBg> = calloop::EventLoop::try_new()?;
+#[allow(clippy::too_many_lines)]
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
 
-    let (globals, event_queue) = registry_queue_init(&conn).unwrap();
+    if std::env::var("RUST_SPANTRACE").is_err() {
+        std::env::set_var("RUST_SPANTRACE", "0");
+    }
+
+    init_logger();
+
+    let conn = Connection::connect_to_env().wrap_err("wayland client connection failed")?;
+
+    let mut event_loop: calloop::EventLoop<'static, CosmicBg> =
+        calloop::EventLoop::try_new().wrap_err("failed to create event loop")?;
+
+    let (globals, event_queue) =
+        registry_queue_init(&conn).wrap_err("failed to initialize registry queue")?;
+
     let qh = event_queue.handle();
+
     WaylandSource::new(event_queue)
-        .unwrap()
+        .wrap_err("WaylandSource::new failed")?
         .insert(event_loop.handle())
-        .unwrap();
+        .wrap_err("failed to insert main EventLoop into WaylandSource")?;
 
     let config_helper = Config::helper();
 
     // TODO: this could be so nice with `inspect_err`, but that is behind the unstable feature `result_option_inspect` right now
     let config = match config_helper.as_ref() {
         Ok(helper) => {
-            let source = ConfigWatchSource::new(&helper).unwrap();
+            let source =
+                ConfigWatchSource::new(helper).expect("failed to create ConfigWatchSource");
+
             event_loop
                 .handle()
                 .insert_source(source, |(config_helper, keys), (), state| {
-                    for key in keys.iter() {
-                        if key == cosmic_bg_config::BG_KEY {
-                            let new_config = Config::load(&config_helper).unwrap();
-                            if state.config != new_config {
-                                state.apply_config(new_config);
+                    let mut changes_applied = false;
+
+                    for key in &keys {
+                        match key.as_str() {
+                            cosmic_bg_config::BACKGROUNDS => {
+                                tracing::debug!("updating backgrounds");
+                                state.config.load_backgrounds(&config_helper);
+                                changes_applied = true;
                             }
-                        } else if let Ok(entry) = config_helper.get::<Entry>(key) {
-                            if let Some(wallpaper) = state
-                                .wallpapers
-                                .iter_mut()
-                                .find(|w| w.entry.output == entry.output)
-                            {
-                                wallpaper.apply_entry(entry, state.source_tx.clone());
+
+                            cosmic_bg_config::DEFAULT_BACKGROUND => {
+                                tracing::debug!("updating default background");
+                                let entry = Config::load_default_background(&config_helper);
+
+                                if state.config.default_background != entry {
+                                    state.config.default_background = entry;
+                                    changes_applied = true;
+                                }
+                            }
+
+                            cosmic_bg_config::SAME_ON_ALL => {
+                                tracing::debug!("updating same_on_all");
+                                state.config.same_on_all = Config::load_same_on_all(&config_helper);
+
+                                if state.config.same_on_all {
+                                    state.config.outputs.clear();
+                                } else {
+                                    state.config.load_backgrounds(&config_helper);
+                                }
+                                state.config.outputs.clear();
+                                changes_applied = true;
+                            }
+
+                            _ => {
+                                tracing::debug!(key, "key modified");
+
+                                if let Some(output) = key.strip_prefix("output.") {
+                                    if let Ok(new_entry) = config_helper.get::<Entry>(key) {
+                                        if let Some(existing) = state.config.entry_mut(output) {
+                                            *existing = new_entry;
+                                            changes_applied = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                })
-                .unwrap();
 
-            match Config::load(helper) {
-                Ok(conf) => conf,
-                Err(err) => {
-                    eprintln!("Config file error, falling back to defaults: {err:?}");
-                    Config::fallback()
-                }
-            }
+                    if changes_applied {
+                        state.apply_backgrounds();
+
+                        tracing::debug!(
+                            same_on_all = state.config.same_on_all,
+                            outputs = ?state.config.outputs,
+                            backgrounds = ?state.config.backgrounds,
+                            default_background = ?state.config.default_background.source,
+                            "new state"
+                        );
+                    }
+                })
+                .expect("failed to insert config watching source into event loop");
+
+            Config::load(helper).unwrap_or_else(|why| {
+                tracing::error!(?why, "Config file error, falling back to defaults");
+                Config::default()
+            })
         }
-        Err(err) => {
-            eprintln!("Config file error, falling back to defaults: {err:?}");
-            Config::fallback()
+        Err(why) => {
+            tracing::error!(?why, "Config file error, falling back to defaults");
+            Config::default()
         }
     };
 
-    let source_tx = img_source::img_source(event_loop.handle());
+    let source_tx = img_source::img_source(&event_loop.handle());
+
     // initial setup with all images
-    let mut wallpapers = config
-        .backgrounds
-        .iter()
-        .map(|bg| {
-            CosmicBgWallpaper::new(
-                bg.clone(),
-                qh.clone(),
-                event_loop.handle(),
-                source_tx.clone(),
-            )
-        })
-        .collect_vec();
-    // XXX All entry if it exists, should be placed last in the list of wallpapers
-    wallpapers.sort_by(|a, b| a.entry.output.cmp(&b.entry.output));
+    let wallpapers = {
+        let mut wallpapers = Vec::with_capacity(config.backgrounds.len() + 1);
+
+        wallpapers.extend({
+            config.backgrounds.iter().map(|bg| {
+                Wallpaper::new(
+                    bg.clone(),
+                    qh.clone(),
+                    event_loop.handle(),
+                    source_tx.clone(),
+                )
+            })
+        });
+
+        wallpapers.sort_by(|a, b| a.entry.output.cmp(&b.entry.output));
+
+        wallpapers.push(Wallpaper::new(
+            config.default_background.clone(),
+            qh.clone(),
+            event_loop.handle(),
+            source_tx.clone(),
+        ));
+
+        wallpapers
+    };
 
     let mut bg_state = CosmicBg {
         registry_state: RegistryState::new(&globals),
@@ -143,19 +207,8 @@ fn main() -> anyhow::Result<()> {
             break;
         }
     }
-    Ok(())
-}
 
-#[derive(Debug)]
-pub struct CosmicBgLayer {
-    layer: LayerSurface,
-    wl_output: WlOutput,
-    output_info: OutputInfo,
-    pool: Option<SlotPool>,
-    first_configure: bool,
-    last_draw: Option<u64>,
-    width: u32,
-    height: u32,
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -166,76 +219,66 @@ pub struct CosmicBg {
     shm_state: Shm,
     layer_state: LayerShell,
     qh: QueueHandle<CosmicBg>,
-    source_tx: calloop::channel::SyncSender<(Output, notify::Event)>,
+    source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
     exit: bool,
-    wallpapers: Vec<CosmicBgWallpaper>,
+    wallpapers: Vec<Wallpaper>,
     config: Config,
     active_outputs: Vec<WlOutput>,
 }
 
 impl CosmicBg {
-    fn apply_config(&mut self, mut config: Config) {
-        let mut existing_layers = Vec::new();
-        self.wallpapers.retain_mut(|w| {
-            if let Some(pos) = config
-                .backgrounds
-                .iter_mut()
-                .position(|new_w| new_w.output == w.entry.output)
-            {
-                let _not_new = config.backgrounds.remove(pos);
-                true
-            } else {
-                existing_layers.append(&mut w.layers);
-                false
-            }
-        });
+    fn apply_backgrounds(&mut self) {
+        self.wallpapers.clear();
 
-        for w in config.backgrounds {
-            let mut new_wallpaper = CosmicBgWallpaper::new(
-                w,
-                self.qh.clone(),
-                self.loop_handle.clone(),
-                self.source_tx.clone(),
-            );
-            // reuse existing layers from the `All` wallpaper if possible
-            if let Some(l) = self.wallpapers.last_mut().and_then(|w| {
-                if let Some(pos) = w.layers.iter().position(|l| {
-                    let o_name = l.output_info.name.clone().unwrap_or_default();
-                    &new_wallpaper.entry.output == &Output::Name(o_name)
-                }) {
-                    Some(w.layers.remove(pos))
-                } else {
-                    None
-                }
-            }) {
-                new_wallpaper.layers.push(l);
-            // create a new layer if there is an existing output that matches the added wallpaper
-            } else if let Some((output, output_info)) = self.active_outputs.iter().find_map(|o| {
-                let output_info = match self.output_state.info(&o) {
-                    Some(info) => info,
-                    None => return None,
-                };
-                let o_name = output_info.name.clone().unwrap_or_default();
-                if &new_wallpaper.entry.output == &Output::Name(o_name) {
-                    Some((o.clone(), output_info.clone()))
-                } else {
-                    None
-                }
-            }) {
-                new_wallpaper
-                    .layers
-                    .push(self.new_layer(output, output_info));
+        let mut all_wallpaper = Wallpaper::new(
+            self.config.default_background.clone(),
+            self.qh.clone(),
+            self.loop_handle.clone(),
+            self.source_tx.clone(),
+        );
+
+        let mut backgrounds = self.config.backgrounds.clone();
+        backgrounds.sort_by(|a, b| a.output.cmp(&b.output));
+
+        'outer: for output in &self.active_outputs {
+            let Some(output_info) = self.output_state.info(output) else {
+                continue
             };
-            self.wallpapers.push(new_wallpaper);
-            self.wallpapers
-                .sort_by(|a, b| a.entry.output.cmp(&b.entry.output));
+
+            let o_name = output_info.name.clone().unwrap_or_default();
+            for background in &backgrounds {
+                if background.output == o_name {
+                    let mut new_wallpaper = Wallpaper::new(
+                        background.clone(),
+                        self.qh.clone(),
+                        self.loop_handle.clone(),
+                        self.source_tx.clone(),
+                    );
+
+                    new_wallpaper
+                        .layers
+                        .push(self.new_layer(output.clone(), output_info));
+
+                    self.wallpapers.push(new_wallpaper);
+
+                    continue 'outer;
+                }
+            }
+
+            all_wallpaper
+                .layers
+                .push(self.new_layer(output.clone(), output_info));
         }
+
+        self.wallpapers.push(all_wallpaper);
     }
 
+    #[must_use]
     pub fn new_layer(&self, output: WlOutput, output_info: OutputInfo) -> CosmicBgLayer {
-        let (width, height) = output_info.logical_size.unwrap_or((0, 0));
-        let (width, height) = (width as u32, height as u32);
+        let (width, height) = output_info
+            .logical_size
+            .map_or((0, 0), |(w, h)| (w as u32, h as u32));
 
         let surface = self.compositor_state.create_surface(&self.qh);
 
@@ -246,11 +289,13 @@ impl CosmicBg {
             "wallpaper".into(),
             Some(&output),
         );
+
         layer.set_anchor(Anchor::all());
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(width, height);
         surface.commit();
+
         CosmicBgLayer {
             layer,
             wl_output: output,
@@ -258,8 +303,8 @@ impl CosmicBg {
             width,
             height,
             first_configure: false,
-            last_draw: None,
             pool: None,
+            last_draw: None,
         }
     }
 }
@@ -297,18 +342,21 @@ impl OutputHandler for CosmicBg {
         wl_output: wl_output::WlOutput,
     ) {
         self.active_outputs.push(wl_output.clone());
-        let output_info = match self.output_state.info(&wl_output) {
-            Some(info) => info,
-            None => return,
+        let Some(output_info) = self.output_state.info(&wl_output) else {
+            return
         };
 
-        if let Some(pos) = self.wallpapers.iter().position(|w| match &w.entry.output {
-            Output::All => !w.layers.iter().any(|l| l.wl_output == wl_output),
-            Output::Name(name) => {
-                Some(name) == output_info.name.as_ref()
-                    && !w.layers.iter().any(|l| l.wl_output == wl_output)
-            }
-        }) {
+        if let Some(pos) = self
+            .wallpapers
+            .iter()
+            .position(|w| match w.entry.output.as_str() {
+                "all" => !w.layers.iter().any(|l| l.wl_output == wl_output),
+                name => {
+                    Some(name) == output_info.name.as_deref()
+                        && !w.layers.iter().any(|l| l.wl_output == wl_output)
+                }
+            })
+        {
             let layer = self.new_layer(wl_output, output_info);
             self.wallpapers[pos].layers.push(layer);
         }
@@ -330,28 +378,26 @@ impl OutputHandler for CosmicBg {
         output: wl_output::WlOutput,
     ) {
         self.active_outputs.retain(|o| o != &output);
-        let output_info = match self.output_state.info(&output) {
-            Some(info) => info,
-            None => return,
+        let Some(output_info) = self.output_state.info(&output) else {
+            return
         };
 
-        let item = match self.wallpapers.iter_mut().find(|w| match &w.entry.output {
-            Output::All => true,
-            Output::Name(name) => Some(name) == output_info.name.as_ref(),
-        }) {
-            Some(item) => item,
-            None => return,
-        };
+        let Some(output_wallpaper) = self.wallpapers.iter_mut()
+            .find(|w| match w.entry.output.as_str() {
+                "all" => true,
+                name => Some(name) == output_info.name.as_deref(),
+            }) else {
+                return;
+            };
 
-        let layer_position = match item
+        let Some(layer_position) = output_wallpaper
             .layers
             .iter()
-            .position(|bg_layer| bg_layer.wl_output == output)
-        {
-            Some(layer) => layer,
-            None => return,
-        };
-        item.layers.remove(layer_position);
+            .position(|bg_layer| bg_layer.wl_output == output) else {
+                return
+            };
+
+        output_wallpaper.layers.remove(layer_position);
     }
 }
 
@@ -368,26 +414,41 @@ impl LayerShellHandler for CosmicBg {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        for wallpaper in self.wallpapers.iter_mut() {
+        let span = tracing::debug_span!("<CosmicBg as LayerShellHandler>::configure");
+        let _handle = span.enter();
+
+        for wallpaper in &mut self.wallpapers {
             let (w, h) = configure.new_size;
             if let Some(w_layer) = wallpaper.layers.iter_mut().find(|l| &l.layer == layer) {
                 w_layer.width = w;
                 w_layer.height = h;
+
                 if let Some(pool) = w_layer.pool.as_mut() {
-                    pool.resize(w as usize * h as usize * 4)
-                        .expect("failed to resize the pool");
+                    if let Err(why) = pool.resize(w as usize * h as usize * 4) {
+                        tracing::error!(?why, "failed to resize pool");
+                        continue;
+                    }
                 } else {
-                    w_layer.pool.replace(
-                        SlotPool::new(w as usize * h as usize * 4, &self.shm_state)
-                            .expect("Failed to create pool"),
-                    );
+                    match SlotPool::new(w as usize * h as usize * 4, &self.shm_state) {
+                        Ok(pool) => {
+                            w_layer.pool.replace(pool);
+                        }
+
+                        Err(why) => {
+                            tracing::error!(?why, "failed to create pool");
+                            continue;
+                        }
+                    }
                 }
+
                 if w_layer.first_configure {
                     w_layer.first_configure = false;
                 }
+
                 if wallpaper.layers.iter().all(|l| !l.first_configure) {
                     wallpaper.draw();
                 }
+
                 break;
             }
         }
@@ -400,389 +461,10 @@ impl ShmHandler for CosmicBg {
     }
 }
 
-#[derive(Debug)]
-pub struct CosmicBgWallpaper {
-    layers: Vec<CosmicBgLayer>,
-    cur_image: Option<RgbImage>,
-    image_queue: VecDeque<PathBuf>,
-    entry: Entry,
-    // TODO filter images by whether they seem to match dark / light mode
-    // Alternatively only load from light / dark subdirectories given a directory source when this is active
-    new_image: bool,
-    timer_token: Option<RegistrationToken>,
-    loop_handle: calloop::LoopHandle<'static, CosmicBg>,
-    qh: QueueHandle<CosmicBg>,
-}
-
-impl Drop for CosmicBgWallpaper {
-    fn drop(&mut self) {
-        if let Some(token) = self.timer_token.take() {
-            self.loop_handle.remove(token);
-        }
-    }
-}
-
-impl CosmicBgWallpaper {
-    pub fn new(
-        entry: Entry,
-        qh: QueueHandle<CosmicBg>,
-        loop_handle: calloop::LoopHandle<'static, CosmicBg>,
-        source_tx: calloop::channel::SyncSender<(Output, notify::Event)>,
-    ) -> Self {
-        let mut wallpaper = CosmicBgWallpaper {
-            entry: entry.clone(),
-            layers: Vec::new(),
-            cur_image: None,
-            image_queue: Default::default(),
-            new_image: false,
-            timer_token: None,
-            loop_handle,
-            qh,
-        };
-        wallpaper.load_images();
-        wallpaper.register_timer();
-        wallpaper.watch_source(source_tx.clone());
-        wallpaper
-    }
-
-    pub fn draw(&mut self) {
-        let mut cur_resized_img: Option<RgbImage> = None;
-        let (hash, original) = match self.cur_image.as_ref().map(|img| {
-            let mut hasher = DefaultHasher::new();
-            img.hash(&mut hasher);
-            (hasher.finish(), img)
-        }) {
-            Some((hash, img)) => (hash, img),
-            None => return,
-        };
-        let mut resizer = fr::Resizer::new(match self.entry.filter_method {
-            FilterMethod::Nearest => fr::ResizeAlg::Nearest,
-            FilterMethod::Linear => fr::ResizeAlg::Convolution(fr::FilterType::Bilinear),
-            FilterMethod::Lanczos => fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3),
-        });
-        for layer in self
-            .layers
-            .iter_mut()
-            .filter(|l| !l.first_configure && l.last_draw != Some(hash))
-        {
-            let pool = match layer.pool.as_mut() {
-                Some(p) => p,
-                None => continue,
-            };
-            let pixels = if original.width() == layer.width && original.height() == layer.height {
-                original.pixels()
-            } else {
-                if cur_resized_img
-                    .as_ref()
-                    .map(|img| {
-                        img.width() != layer.width as u32 || img.height() != layer.height as u32
-                    })
-                    .unwrap_or(true)
-                {
-                    cur_resized_img = match self.cur_image.clone() {
-                        Some(img) => match self.entry.scaling_mode {
-                            ScalingMode::Fit(color) => {
-                                let img = match fr::Image::from_vec_u8(
-                                    NonZeroU32::new(img.width()).unwrap(),
-                                    NonZeroU32::new(img.height()).unwrap(),
-                                    img.into_vec(),
-                                    fr::PixelType::U8x3,
-                                ) {
-                                    Ok(img) => img,
-                                    Err(_) => continue,
-                                };
-                                let u8_color = [
-                                    (u8::MAX as f32 * color[0]).round() as u8,
-                                    (u8::MAX as f32 * color[1]).round() as u8,
-                                    (u8::MAX as f32 * color[2]).round() as u8,
-                                ];
-                                let mut final_image = image::ImageBuffer::from_pixel(
-                                    layer.width,
-                                    layer.height,
-                                    *image::Rgb::from_slice(&u8_color),
-                                );
-                                let (w, h) = (img.width().get(), img.height().get());
-
-                                let ratio = (layer.width as f64 / w as f64)
-                                    .min(layer.height as f64 / h as f64);
-                                let (new_width, new_height) = (
-                                    (w as f64 * ratio).round() as u32,
-                                    (h as f64 * ratio).round() as u32,
-                                );
-
-                                let mut dst_image = fr::Image::new(
-                                    NonZeroU32::new(new_width).unwrap(),
-                                    NonZeroU32::new(new_width).unwrap(),
-                                    fr::PixelType::U8x3,
-                                );
-
-                                let mut dst_view = dst_image.view_mut();
-                                resizer.resize(&img.view(), &mut dst_view).unwrap();
-
-                                let dst_image = RgbImage::from_raw(
-                                    layer.width,
-                                    layer.height,
-                                    dst_image.into_vec(),
-                                )
-                                .unwrap();
-                                image::imageops::replace(
-                                    &mut final_image,
-                                    &dst_image,
-                                    ((layer.width - new_width) / 2).into(),
-                                    ((layer.height - new_height) / 2).into(),
-                                );
-
-                                Some(final_image)
-                            }
-                            ScalingMode::Zoom => {
-                                let img = match fr::Image::from_vec_u8(
-                                    NonZeroU32::new(img.width()).unwrap(),
-                                    NonZeroU32::new(img.height()).unwrap(),
-                                    img.into_vec(),
-                                    fr::PixelType::U8x3,
-                                ) {
-                                    Ok(img) => img,
-                                    Err(_) => continue,
-                                };
-                                let (w, h) = (img.width().get(), img.height().get());
-                                let ratio = (layer.width as f64 / w as f64)
-                                    .max(layer.height as f64 / h as f64);
-                                let (new_width, new_height) = (
-                                    (w as f64 * ratio).round() as u32,
-                                    (h as f64 * ratio).round() as u32,
-                                );
-                                let mut dst_image = fr::Image::new(
-                                    NonZeroU32::new(new_width).unwrap(),
-                                    NonZeroU32::new(new_height).unwrap(),
-                                    fr::PixelType::U8x3,
-                                );
-                                let mut dst_view = dst_image.view_mut();
-                                resizer.resize(&img.view(), &mut dst_view).unwrap();
-
-                                let mut dst_image =
-                                    RgbImage::from_raw(new_width, new_height, dst_image.into_vec())
-                                        .unwrap();
-
-                                Some(
-                                    image::imageops::crop(
-                                        &mut dst_image,
-                                        (new_width - layer.width) / 2,
-                                        (new_height - layer.height) / 2,
-                                        layer.width,
-                                        layer.height,
-                                    )
-                                    .to_image(),
-                                )
-                            }
-                            ScalingMode::Stretch => {
-                                let img = match fr::Image::from_vec_u8(
-                                    NonZeroU32::new(img.width()).unwrap(),
-                                    NonZeroU32::new(img.height()).unwrap(),
-                                    img.into_vec(),
-                                    fr::PixelType::U8x3,
-                                ) {
-                                    Ok(img) => img,
-                                    Err(_) => continue,
-                                };
-                                let mut dst_image = fr::Image::new(
-                                    NonZeroU32::new(layer.width).unwrap(),
-                                    NonZeroU32::new(layer.height).unwrap(),
-                                    fr::PixelType::U8x3,
-                                );
-                                let mut dst_view = dst_image.view_mut();
-                                resizer.resize(&img.view(), &mut dst_view).unwrap();
-
-                                let dst_image = RgbImage::from_raw(
-                                    layer.width,
-                                    layer.height,
-                                    dst_image.into_vec(),
-                                )
-                                .unwrap();
-                                Some(dst_image)
-                            }
-                        },
-                        None => continue,
-                    };
-                }
-                cur_resized_img.as_ref().unwrap().pixels()
-            };
-
-            let width = layer.width;
-            let height = layer.height;
-            let stride = layer.width as i32 * 4;
-            layer.last_draw = Some(hash);
-
-            let (buffer, canvas) = pool
-                .create_buffer(
-                    width as i32,
-                    height as i32,
-                    stride,
-                    wl_shm::Format::Xrgb8888,
-                )
-                .expect("create buffer");
-            // Draw to the window:
-            {
-                canvas
-                    .chunks_exact_mut(4)
-                    .zip(pixels)
-                    .for_each(|(dest, source)| {
-                        dest[2] = source.0[0].to_le();
-                        dest[1] = source.0[1].to_le();
-                        dest[0] = source.0[2].to_le();
-                    });
-            }
-
-            let wl_surface = layer.layer.wl_surface();
-            // Damage the entire window
-            wl_surface.damage_buffer(0, 0, width as i32, height as i32);
-
-            // Request our next frame
-            layer.layer.wl_surface().frame(&self.qh, wl_surface.clone());
-
-            // Attach and commit to present.
-            buffer.attach_to(wl_surface).expect("buffer attach");
-            wl_surface.commit();
-        }
-    }
-
-    fn load_images(&mut self) {
-        println!("Loading images from {:?}", self.entry.source);
-        let mut image_queue = VecDeque::new();
-        if self.entry.source.is_dir() {
-            for img_path in WalkDir::new(&self.entry.source)
-                .follow_links(true)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|p| p.path().is_file())
-            {
-                image_queue.push_front(img_path.path().into());
-            }
-        } else if self.entry.source.is_file() {
-            image_queue.push_front(self.entry.source.clone());
-        }
-        {
-            let image_slice = image_queue.make_contiguous();
-            match self.entry.sampling_method {
-                SamplingMethod::Alphanumeric => {
-                    image_slice.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()))
-                }
-                SamplingMethod::Random => image_slice.shuffle(&mut thread_rng()),
-            };
-        }
-
-        let cur_image = image_queue.pop_front().and_then(|cur_image_path| {
-            let img = match ImageReader::open(&cur_image_path) {
-                Ok(img) => match img.decode() {
-                    Ok(img) => Some(img),
-                    Err(_) => return None,
-                },
-                Err(_) => return None,
-            };
-            image_queue.push_back(cur_image_path);
-            img.map(|img| img.into_rgb8())
-        });
-
-        self.new_image = cur_image.is_some();
-        self.cur_image = cur_image;
-        self.image_queue = image_queue;
-    }
-
-    fn watch_source(&self, tx: calloop::channel::SyncSender<(Output, notify::Event)>) {
-        let output = self.entry.output.clone();
-        let mut watcher = match RecommendedWatcher::new(
-            move |res| {
-                if let Ok(e) = res {
-                    let _ = tx.send((output.clone(), e));
-                }
-            },
-            notify::Config::default(),
-        ) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-
-        let source = self.entry.source.as_path();
-        if let Ok(m) = fs::metadata(&source) {
-            if m.is_dir() {
-                let _ = watcher.watch(&source, RecursiveMode::Recursive);
-            } else if m.is_file() {
-                let _ = watcher.watch(&source, RecursiveMode::NonRecursive);
-            }
-        }
-    }
-
-    fn apply_entry(
-        &mut self,
-        config: Entry,
-        tx: calloop::channel::SyncSender<(Output, notify::Event)>,
-    ) {
-        if config.output == self.entry.output && self.entry != config {
-            let src_changed = config.source != self.entry.source;
-            self.entry = config;
-            if src_changed {
-                self.load_images();
-                self.watch_source(tx);
-            }
-            self.draw();
-        }
-    }
-
-    fn register_timer(&mut self) {
-        let rotation_freq = self.entry.rotation_frequency;
-        let cosmic_bg_clone = self.entry.output.clone();
-        // set timer for rotation
-        if rotation_freq > 0 {
-            self.timer_token = self
-                .loop_handle
-                .insert_source(
-                    Timer::from_duration(Duration::from_secs(rotation_freq)),
-                    move |_, _, state: &mut CosmicBg| {
-                        let item = match state
-                            .wallpapers
-                            .iter_mut()
-                            .find(|w| w.entry.output == cosmic_bg_clone)
-                        {
-                            Some(item) => item,
-                            None => return TimeoutAction::Drop, // Drop if no item found for this timer
-                        };
-
-                        let mut img = None;
-
-                        while img.is_none() && item.image_queue.front().is_some() {
-                            let next = item.image_queue.pop_front().unwrap();
-
-                            img = match ImageReader::open(&next) {
-                                Ok(img) => match img.decode() {
-                                    Ok(img) => Some(img),
-                                    Err(_) => None,
-                                },
-                                Err(_) => None,
-                            };
-                            if let Some(image) = img.take().map(|img| img.into_rgb8()) {
-                                item.image_queue.push_back(next);
-                                item.cur_image.replace(image);
-                                item.new_image = true;
-                                item.draw();
-                                return TimeoutAction::ToDuration(Duration::from_secs(
-                                    rotation_freq,
-                                ));
-                            }
-                        }
-
-                        TimeoutAction::Drop
-                    },
-                )
-                .ok();
-        }
-    }
-}
-
 delegate_compositor!(CosmicBg);
 delegate_output!(CosmicBg);
 delegate_shm!(CosmicBg);
-
 delegate_layer!(CosmicBg);
-
 delegate_registry!(CosmicBg);
 
 impl ProvidesRegistryState for CosmicBg {
@@ -790,4 +472,29 @@ impl ProvidesRegistryState for CosmicBg {
         &mut self.registry_state
     }
     registry_handlers![OutputState];
+}
+
+fn init_logger() {
+    let log_level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|level| level.parse::<tracing::Level>().ok())
+        .unwrap_or(tracing::Level::INFO);
+
+    let log_format = tracing_subscriber::fmt::format()
+        .pretty()
+        .without_time()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false)
+        .with_thread_names(true);
+
+    let log_filter = tracing_subscriber::fmt::Layer::default()
+        .with_writer(std::io::stderr)
+        .event_format(log_format)
+        .with_filter(tracing_subscriber::filter::filter_fn(move |metadata| {
+            metadata.level() == &tracing::Level::ERROR
+                || (metadata.target().starts_with("cosmic_bg") && metadata.level() <= &log_level)
+        }));
+
+    tracing_subscriber::registry().with(log_filter).init();
 }

@@ -1,15 +1,16 @@
-use cosmic_bg_config::Output;
+// SPDX-License-Identifier: MPL-2.0-only
+
 use notify::event::{ModifyKind, RenameMode};
 use sctk::reexports::calloop::{channel, LoopHandle};
 
 use crate::CosmicBg;
 
-pub fn img_source(handle: LoopHandle<CosmicBg>) -> channel::SyncSender<(Output, notify::Event)> {
+pub fn img_source(handle: &LoopHandle<CosmicBg>) -> channel::SyncSender<(String, notify::Event)> {
     let (notify_tx, notify_rx) = channel::sync_channel(20);
-    let _ = handle
+    let _res = handle
         .insert_source(
             notify_rx,
-            |e: channel::Event<(Output, notify::Event)>, _, state| {
+            |e: channel::Event<(String, notify::Event)>, _, state| {
                 match e {
                     channel::Event::Msg((source, event)) => match event.kind {
                         notify::EventKind::Create(_)
@@ -47,7 +48,7 @@ pub fn img_source(handle: LoopHandle<CosmicBg>) -> channel::SyncSender<(Output, 
             },
         )
         .map(|_| {})
-        .map_err(|err| anyhow::anyhow!("{}", err));
+        .map_err(|err| eyre::eyre!("{}", err));
 
     notify_tx
 }
