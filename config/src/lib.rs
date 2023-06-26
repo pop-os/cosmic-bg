@@ -298,7 +298,8 @@ impl Config {
             return value;
         }
 
-        let _res = Self::set_same_on_all(config, true);
+        let _res = config.set(SAME_ON_ALL, true);
+
         true
     }
 
