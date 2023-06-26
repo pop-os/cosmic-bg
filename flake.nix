@@ -23,17 +23,13 @@
         pkgDef = {
           src = nix-filter.lib.filter {
             root = ./.;
-            include = [
-              ./src
-              ./cosmic-bg-config
-              ./Cargo.toml
-              ./Cargo.lock
-              ./i18n
-              ./i18n.toml
+            exclude = [
+              ./.gitignore
+              ./flake.nix
+              ./flake.lock
+              ./LICENSE
               ./justfile
-              ./build-aux
-              ./data
-              ./po
+              ./debian
             ];
           };
           nativeBuildInputs = with pkgs; [
@@ -50,7 +46,6 @@
         cargoArtifacts = craneLib.buildDepsOnly pkgDef;
         cosmic-bg = craneLib.buildPackage (pkgDef // {
           inherit cargoArtifacts;
-          configurePhase = "mesonConfigurePhase"; # Enables Meson for setup
         });
       in {
         checks = {
