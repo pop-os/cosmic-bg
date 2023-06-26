@@ -28,7 +28,6 @@
               ./flake.nix
               ./flake.lock
               ./LICENSE
-              ./justfile
               ./debian
             ];
           };
