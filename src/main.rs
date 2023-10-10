@@ -259,7 +259,7 @@ impl CosmicBg {
                     new_wallpaper
                         .layers
                         .push(self.new_layer(output.clone(), output_info));
-
+                    _ = new_wallpaper.save_state();
                     self.wallpapers.push(new_wallpaper);
 
                     continue 'outer;
@@ -271,6 +271,7 @@ impl CosmicBg {
                 .push(self.new_layer(output.clone(), output_info));
         }
 
+        _ = all_wallpaper.save_state();
         self.wallpapers.push(all_wallpaper);
     }
 
