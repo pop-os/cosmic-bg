@@ -1,14 +1,32 @@
 name := 'cosmic-bg'
 export APPID := 'com.system76.CosmicBackground'
 
+# Use mold linker if clang and mold exists.
+clang-path := `which clang || true`
+mold-path := `which mold || true`
+
+linker-arg := if clang-path != '' {
+    if mold-path != '' {
+        '-C linker=' + clang-path + ' -C link-arg=--ld-path=' + mold-path + ' '
+    } else {
+        ''
+    }
+} else {
+    ''
+}
+
+export RUSTFLAGS := linker-arg + env_var_or_default('RUSTFLAGS', '')
+
 rootdir := ''
 prefix := '/usr'
+
 
 base-dir := absolute_path(clean(rootdir / prefix))
 
 export INSTALL_DIR := base-dir / 'share'
 
-bin-src := 'target' / 'release' / name
+cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
+bin-src := cargo-target-dir / 'release' / name
 bin-dst := base-dir / 'bin' / name
 
 # Default recipe which runs `just build-release`
