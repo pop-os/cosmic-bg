@@ -9,6 +9,7 @@ Build-Depends:
   rust-all,
   libwayland-dev,
   libxkbcommon-dev,
+  mold,
   pkg-config,
 Standards-Version: 4.3.0
 Homepage: https://github.com/pop-os/cosmic-bg
