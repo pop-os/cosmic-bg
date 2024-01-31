@@ -6,8 +6,8 @@ mod img_source;
 mod scaler;
 mod wallpaper;
 
-use cosmic_bg_config::{state::State, Config, Entry};
-use cosmic_config::{calloop::ConfigWatchSource, ConfigGet, CosmicConfigEntry};
+use cosmic_bg_config::{state::State, Config};
+use cosmic_config::{calloop::ConfigWatchSource, CosmicConfigEntry};
 use eyre::Context;
 use sctk::{
     compositor::{CompositorHandler, CompositorState},
@@ -73,29 +73,30 @@ fn main() -> color_eyre::Result<()> {
         .insert(event_loop.handle())
         .wrap_err("failed to insert main EventLoop into WaylandSource")?;
 
-    let config_helper = Config::helper();
+    let config_context = cosmic_bg_config::context();
 
-    let config = match config_helper.as_ref() {
-        Ok(helper) => {
-            let source =
-                ConfigWatchSource::new(helper).expect("failed to create ConfigWatchSource");
+    let config = match config_context {
+        Ok(config_context) => {
+            let source = ConfigWatchSource::new(&config_context.0)
+                .expect("failed to create ConfigWatchSource");
 
+            let conf_context = config_context.clone();
             event_loop
                 .handle()
-                .insert_source(source, |(config_helper, keys), (), state| {
+                .insert_source(source, move |(_config, keys), (), state| {
                     let mut changes_applied = false;
 
                     for key in &keys {
                         match key.as_str() {
                             cosmic_bg_config::BACKGROUNDS => {
                                 tracing::debug!("updating backgrounds");
-                                state.config.load_backgrounds(&config_helper);
+                                state.config.load_backgrounds(&conf_context);
                                 changes_applied = true;
                             }
 
                             cosmic_bg_config::DEFAULT_BACKGROUND => {
                                 tracing::debug!("updating default background");
-                                let entry = Config::load_default_background(&config_helper);
+                                let entry = conf_context.default_background();
 
                                 if state.config.default_background != entry {
                                     state.config.default_background = entry;
@@ -105,12 +106,12 @@ fn main() -> color_eyre::Result<()> {
 
                             cosmic_bg_config::SAME_ON_ALL => {
                                 tracing::debug!("updating same_on_all");
-                                state.config.same_on_all = Config::load_same_on_all(&config_helper);
+                                state.config.same_on_all = conf_context.same_on_all();
 
                                 if state.config.same_on_all {
                                     state.config.outputs.clear();
                                 } else {
-                                    state.config.load_backgrounds(&config_helper);
+                                    state.config.load_backgrounds(&conf_context);
                                 }
                                 state.config.outputs.clear();
                                 changes_applied = true;
@@ -118,9 +119,8 @@ fn main() -> color_eyre::Result<()> {
 
                             _ => {
                                 tracing::debug!(key, "key modified");
-
                                 if let Some(output) = key.strip_prefix("output.") {
-                                    if let Ok(new_entry) = config_helper.get::<Entry>(key) {
+                                    if let Ok(new_entry) = conf_context.entry(key) {
                                         if let Some(existing) = state.config.entry_mut(output) {
                                             *existing = new_entry;
                                             changes_applied = true;
@@ -145,7 +145,7 @@ fn main() -> color_eyre::Result<()> {
                 })
                 .expect("failed to insert config watching source into event loop");
 
-            Config::load(helper).unwrap_or_else(|why| {
+            Config::load(&config_context).unwrap_or_else(|why| {
                 tracing::error!(?why, "Config file error, falling back to defaults");
                 Config::default()
             })
