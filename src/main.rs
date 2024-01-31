@@ -37,6 +37,10 @@ use tracing::error;
 use tracing_subscriber::prelude::*;
 use wallpaper::Wallpaper;
 
+extern "C" {
+    fn malloc_trim(pad: usize);
+}
+
 #[derive(Debug)]
 pub struct CosmicBgLayer {
     layer: LayerSurface,
@@ -133,6 +137,10 @@ fn main() -> color_eyre::Result<()> {
 
                     if changes_applied {
                         state.apply_backgrounds();
+
+                        unsafe {
+                            malloc_trim(0);
+                        }
 
                         tracing::debug!(
                             same_on_all = state.config.same_on_all,
