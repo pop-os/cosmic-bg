@@ -11,6 +11,80 @@ pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";
 pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
+pub const CURRENT_IMAGE: &str = "current-image";
+
+/// Create a context to the `cosmic-bg` config.
+///
+/// # Errors
+///
+/// Fails if cosmic-config paths are missing or cannot be created.
+pub fn context() -> Result<Context, cosmic_config::Error> {
+    CosmicConfig::new(NAME, 1).map(Context)
+}
+
+#[derive(Clone, Debug)]
+pub struct Context(pub CosmicConfig);
+
+impl Context {
+    pub fn current_image(&self, output: &str) -> Result<PathBuf, cosmic_config::Error> {
+        self.0.get(&[output, ".", CURRENT_IMAGE].concat())
+    }
+
+    pub fn set_current_image(
+        &self,
+        output: &str,
+        image: PathBuf,
+    ) -> Result<(), cosmic_config::Error> {
+        self.0.set(&[output, ".", CURRENT_IMAGE].concat(), image)
+    }
+
+    /// Get all stored backgrounds from cosmic-config.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the config is missing or fails to parse.
+    pub fn backgrounds(&self) -> Vec<String> {
+        match self.0.get::<Vec<String>>(BACKGROUNDS) {
+            Ok(value) => value,
+            Err(why) => {
+                tracing::error!(?why, "error reading background config");
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn default_background(&self) -> Entry {
+        self.entry("all").unwrap_or_else(|_| Entry::fallback())
+    }
+
+    /// Get the entry for an output from cosmic-config.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the config is missing or fails to parse.
+    pub fn entry(&self, output: &str) -> Result<Entry, cosmic_config::Error> {
+        self.0.get::<Entry>(output)
+    }
+
+    #[must_use]
+    pub fn same_on_all(&self) -> bool {
+        if let Ok(value) = self.0.get::<bool>(SAME_ON_ALL) {
+            return value;
+        }
+
+        let _res = self.0.set(SAME_ON_ALL, true);
+
+        true
+    }
+
+    pub fn set_same_on_all(&self, value: bool) -> Result<(), cosmic_config::Error> {
+        if self.same_on_all() != value {
+            return self.0.set(SAME_ON_ALL, value);
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Setters)]
 #[serde(deny_unknown_fields)]
@@ -160,62 +234,41 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Convenience function for cosmic-config
-    ///
-    /// # Errors
-    ///
-    /// Fails if cosmic-config paths are missing or cannot be created.
-    pub fn helper() -> Result<CosmicConfig, cosmic_config::Error> {
-        CosmicConfig::new(NAME, 1)
-    }
-
     /// Load config with the provided name from cosmic-config.
     ///
     /// # Errors
     ///
     /// Fails if invalid iter are stored within cosmic-config at time of parsing them.
-    pub fn load(context: &CosmicConfig) -> Result<Self, cosmic_config::Error> {
+    pub fn load(context: &Context) -> Result<Self, cosmic_config::Error> {
         let mut config = Self {
-            same_on_all: Self::load_same_on_all(context),
+            same_on_all: context.same_on_all(),
             ..Default::default()
         };
 
-        config.default_background =
-            Self::load_entry(context, "all").unwrap_or_else(|_| Entry::fallback());
+        config.default_background = context.default_background();
 
         if !config.same_on_all {
             config.load_backgrounds(context);
         }
 
-        tracing::debug!(
-            same_on_all = config.same_on_all,
-            outputs = ?config.outputs,
-            backgrounds = ?config.backgrounds,
-            default_background = ?config.default_background,
-            "loaded config"
-        );
-
         Ok(config)
     }
 
-    pub fn load_backgrounds(&mut self, context: &CosmicConfig) {
+    pub fn load_backgrounds(&mut self, context: &Context) {
         self.backgrounds.clear();
         self.outputs.clear();
 
-        let entries = Self::load_outputs(context)
+        let entries = context
+            .backgrounds()
             .into_iter()
-            .filter_map(|output| Self::load_entry(context, &["output.", &output].concat()).ok());
+            .filter_map(|output| context.entry(&["output.", &output].concat()).ok());
 
         for entry in entries {
             self.outputs.insert(entry.output.clone());
             self.backgrounds.push(entry);
         }
 
-        self.default_background = Self::load_default_background(context);
-    }
-
-    pub fn load_default_background(context: &CosmicConfig) -> Entry {
-        Self::load_entry(context, "all").unwrap_or_else(|_| Entry::fallback())
+        self.default_background = context.default_background();
     }
 
     /// Get the entry for a given output.
@@ -232,15 +285,6 @@ impl Config {
             .find(|entry| entry.output == output)
     }
 
-    /// Get the entry for an output from cosmic-config.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the config is missing or fails to parse.
-    pub fn load_entry(config: &CosmicConfig, output: &str) -> Result<Entry, cosmic_config::Error> {
-        config.get::<Entry>(output)
-    }
-
     /// Applies the entry for the given output to cosmic-config.
     ///
     /// # Errors
@@ -248,7 +292,7 @@ impl Config {
     /// Fails if the config could not be set in cosmic-config.
     pub fn set_entry(
         &mut self,
-        config: &CosmicConfig,
+        context: &Context,
         entry: Entry,
     ) -> Result<(), cosmic_config::Error> {
         let output_key = if entry.output == "all" {
@@ -258,8 +302,8 @@ impl Config {
             ["output.", &entry.output].concat()
         };
 
-        if config.get(&output_key).ok().as_ref() != Some(&entry) {
-            config.set(&output_key, entry.clone())?;
+        if context.0.get(&output_key).ok().as_ref() != Some(&entry) {
+            context.0.set(&output_key, entry.clone())?;
         }
 
         if let Some(old) = self.entry_mut(&output_key) {
@@ -270,44 +314,10 @@ impl Config {
 
         let new_value = self.outputs.iter().cloned().collect::<Vec<_>>();
 
-        if config.get::<Vec<String>>(BACKGROUNDS).ok().as_deref() != Some(&new_value) {
-            if let Err(why) = config.set::<Vec<String>>(BACKGROUNDS, new_value) {
+        if context.backgrounds() != new_value {
+            if let Err(why) = context.0.set::<Vec<String>>(BACKGROUNDS, new_value) {
                 tracing::error!(?why, "failed to update outputs");
             }
-        }
-
-        Ok(())
-    }
-
-    /// Get all stored outputs from cosmic-config.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the config is missing or fails to parse.
-    pub fn load_outputs(config: &CosmicConfig) -> Vec<String> {
-        match config.get::<Vec<String>>(BACKGROUNDS) {
-            Ok(value) => value,
-            Err(why) => {
-                tracing::error!(?why, "error reading background config");
-                Vec::new()
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn load_same_on_all(config: &CosmicConfig) -> bool {
-        if let Ok(value) = config.get::<bool>(SAME_ON_ALL) {
-            return value;
-        }
-
-        let _res = config.set(SAME_ON_ALL, true);
-
-        true
-    }
-
-    pub fn set_same_on_all(config: &CosmicConfig, value: bool) -> Result<(), cosmic_config::Error> {
-        if Self::load_same_on_all(config) != value {
-            return config.set(SAME_ON_ALL, value);
         }
 
         Ok(())

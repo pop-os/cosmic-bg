@@ -1,6 +1,4 @@
-use cosmic_config::{
-    cosmic_config_derive::CosmicConfigEntry, Config, ConfigGet, ConfigSet, CosmicConfigEntry,
-};
+use cosmic_config::{cosmic_config_derive::CosmicConfigEntry, Config, CosmicConfigEntry};
 use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
 

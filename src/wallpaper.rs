@@ -208,6 +208,7 @@ impl Wallpaper {
                 tracing::debug!(?source, "loading images");
 
                 if source.is_dir() {
+                    // Store paths of wallpapers to be used for the slideshow.
                     for img_path in WalkDir::new(source)
                         .follow_links(true)
                         .into_iter()
@@ -231,6 +232,7 @@ impl Wallpaper {
                 }
 
                 image_queue.pop_front().and_then(|current_image_path| {
+                    set_current_image(&self.entry.output, current_image_path.clone());
                     self.current_source = Some(Source::Path(current_image_path.clone()));
                     let img = match ImageReader::open(&current_image_path) {
                         Ok(img) => match img.decode() {
@@ -291,6 +293,7 @@ impl Wallpaper {
         let cosmic_bg_clone = self.entry.output.clone();
         // set timer for rotation
         if rotation_freq > 0 {
+            let output = self.entry.output.clone();
             self.timer_token = self
                 .loop_handle
                 .insert_source(
@@ -313,6 +316,8 @@ impl Wallpaper {
                                 error!("{err}");
                             }
 
+                            set_current_image(&output, next.clone());
+
                             let image = match ImageReader::open(&next) {
                                 Ok(image) => match image.decode() {
                                     Ok(image) => image,
@@ -334,5 +339,11 @@ impl Wallpaper {
                 )
                 .ok();
         }
+    }
+}
+
+fn set_current_image(output: &str, image: PathBuf) {
+    if let Ok(context) = cosmic_bg_config::context() {
+        let _res = context.set_current_image(output, image);
     }
 }
