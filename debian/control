@@ -10,6 +10,7 @@ Build-Depends:
   libwayland-dev,
   libxkbcommon-dev,
   mold,
+  nasm,
   pkg-config,
 Standards-Version: 4.3.0
 Homepage: https://github.com/pop-os/cosmic-bg
