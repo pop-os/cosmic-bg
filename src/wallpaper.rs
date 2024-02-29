@@ -233,7 +233,7 @@ impl Wallpaper {
 
                     // If a wallpaper from this slideshow was previously set, resume with that wallpaper.
                     if let Ok(context) = cosmic_bg_config::context() {
-                        if let Ok(last_path) = context.current_image(&self.entry.output) {
+                        if let Some(Source::Path(last_path)) = current_image(&self.entry.output) {
                             if image_queue.contains(&last_path) {
                                 while let Some(path) = image_queue.pop_front() {
                                     if path == last_path {
@@ -249,7 +249,6 @@ impl Wallpaper {
                 }
 
                 image_queue.pop_front().and_then(|current_image_path| {
-                    set_current_image(&self.entry.output, current_image_path.clone());
                     self.current_source = Some(Source::Path(current_image_path.clone()));
                     let img = match ImageReader::open(&current_image_path) {
                         Ok(img) => match img.decode() {
@@ -333,8 +332,6 @@ impl Wallpaper {
                                 error!("{err}");
                             }
 
-                            set_current_image(&output, next.clone());
-
                             let image = match ImageReader::open(&next) {
                                 Ok(image) => match image.decode() {
                                     Ok(image) => image,
@@ -359,8 +356,18 @@ impl Wallpaper {
     }
 }
 
-fn set_current_image(output: &str, image: PathBuf) {
-    if let Ok(context) = cosmic_bg_config::context() {
-        let _res = context.set_current_image(output, image);
-    }
+fn current_image(output: &str) -> Option<Source> {
+    let state = State::state().ok()?;
+    let mut wallpapers = State::get_entry(&state)
+        .unwrap_or_default()
+        .wallpapers
+        .into_iter();
+
+    let wallpaper = if output == "all" {
+        wallpapers.next()
+    } else {
+        wallpapers.into_iter().find(|(name, _path)| name == output)
+    };
+
+    wallpaper.map(|(_name, path)| path)
 }

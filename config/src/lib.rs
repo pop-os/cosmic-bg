@@ -11,7 +11,6 @@ pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";
 pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
-pub const CURRENT_IMAGE: &str = "current-image";
 
 /// Create a context to the `cosmic-bg` config.
 ///
@@ -26,18 +25,6 @@ pub fn context() -> Result<Context, cosmic_config::Error> {
 pub struct Context(pub CosmicConfig);
 
 impl Context {
-    pub fn current_image(&self, output: &str) -> Result<PathBuf, cosmic_config::Error> {
-        self.0.get(&[output, ".", CURRENT_IMAGE].concat())
-    }
-
-    pub fn set_current_image(
-        &self,
-        output: &str,
-        image: PathBuf,
-    ) -> Result<(), cosmic_config::Error> {
-        self.0.set(&[output, ".", CURRENT_IMAGE].concat(), image)
-    }
-
     /// Get all stored backgrounds from cosmic-config.
     ///
     /// # Errors
