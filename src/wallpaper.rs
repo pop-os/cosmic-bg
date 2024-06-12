@@ -111,8 +111,11 @@ impl Wallpaper {
                 img.width() != layer.width || img.height() != layer.height
             }) {
                 let CosmicBgLayer { width, height, .. } = *layer;
-
-                cur_resized_img = match self.entry.source {
+                let Some(source) = self.current_source.as_ref() else {
+                    tracing::info!("No source for wallpaper");
+                    continue;
+                };
+                cur_resized_img = match source {
                     Source::Path(ref path) => {
                         let img = &match ImageReader::open(&path) {
                             Ok(img) => {
