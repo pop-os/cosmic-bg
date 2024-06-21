@@ -98,14 +98,14 @@ pub struct Entry {
 }
 
 /// A background image which is colored.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
 pub enum Color {
     Single([f32; 3]),
     Gradient(Gradient),
 }
 
 /// A background image which is colored by a gradient.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
 pub struct Gradient {
     pub colors: Cow<'static, [[f32; 3]]>,
     pub radius: f32,
