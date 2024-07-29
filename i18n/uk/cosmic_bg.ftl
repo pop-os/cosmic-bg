@@ -1,2 +1,2 @@
-app-name = Тло Cosmic
+app-name = Тло COSMIC
 translator-credits = Yevhen Popok
