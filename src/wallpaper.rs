@@ -101,25 +101,29 @@ impl Wallpaper {
         let start = Instant::now();
         let mut cur_resized_img: Option<DynamicImage> = None;
 
-        for layer in self
+        // Only draw if all layers have been configured with size, and scale
+        if self
             .layers
-            .iter_mut()
-            .filter(|layer| !layer.first_configure)
+            .iter()
+            .any(|l| l.size.is_none() || l.fractional_scale.is_none())
         {
+            return;
+        }
+
+        for layer in self.layers.iter_mut().filter(|layer| layer.needs_redraw) {
             let Some(pool) = layer.pool.as_mut() else {
                 continue;
             };
 
-            let Some(fractional_scale) = layer.fractional_scale else {
-                continue;
-            };
+            let fractional_scale = layer.fractional_scale.unwrap();
+            let (width, height) = layer.size.unwrap();
+            let width = width * fractional_scale / 120;
+            let height = height * fractional_scale / 120;
 
-            let width = layer.width * fractional_scale / 120;
-            let height = layer.height * fractional_scale / 120;
-
-            if cur_resized_img.as_ref().map_or(true, |img| {
-                img.width() != layer.width || img.height() != layer.height
-            }) {
+            if cur_resized_img
+                .as_ref()
+                .map_or(true, |img| img.width() != width || img.height() != height)
+            {
                 let Some(source) = self.current_source.as_ref() else {
                     tracing::info!("No source for wallpaper");
                     continue;
@@ -194,6 +198,7 @@ impl Wallpaper {
             match buffer_result {
                 Ok(buffer) => {
                     crate::draw::layer_surface(layer, &self.queue_handle, &buffer);
+                    layer.needs_redraw = false;
 
                     let elapsed = Instant::now().duration_since(start);
 

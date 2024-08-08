@@ -59,9 +59,8 @@ pub struct CosmicBgLayer {
     wl_output: WlOutput,
     output_info: OutputInfo,
     pool: Option<SlotPool>,
-    first_configure: bool,
-    width: u32,
-    height: u32,
+    needs_redraw: bool,
+    size: Option<(u32, u32)>,
     fractional_scale: Option<u32>,
 }
 
@@ -302,10 +301,6 @@ impl CosmicBg {
 
     #[must_use]
     pub fn new_layer(&self, output: WlOutput, output_info: OutputInfo) -> CosmicBgLayer {
-        let (width, height) = output_info
-            .logical_size
-            .map_or((0, 0), |(w, h)| (w as u32, h as u32));
-
         let surface = self.compositor_state.create_surface(&self.qh);
 
         let layer = self.layer_state.create_layer_surface(
@@ -331,10 +326,9 @@ impl CosmicBg {
             viewport,
             wl_output: output,
             output_info,
-            width,
-            height,
+            size: None,
             fractional_scale: None,
-            first_configure: false,
+            needs_redraw: false,
             pool: None,
         }
     }
@@ -488,8 +482,7 @@ impl LayerShellHandler for CosmicBg {
         for wallpaper in &mut self.wallpapers {
             let (w, h) = configure.new_size;
             if let Some(w_layer) = wallpaper.layers.iter_mut().find(|l| &l.layer == layer) {
-                w_layer.width = w;
-                w_layer.height = h;
+                w_layer.size = Some((w, h));
 
                 if let Some(pool) = w_layer.pool.as_mut() {
                     if let Err(why) = pool.resize(w as usize * h as usize * 4) {
@@ -509,13 +502,8 @@ impl LayerShellHandler for CosmicBg {
                     }
                 }
 
-                if w_layer.first_configure {
-                    w_layer.first_configure = false;
-                }
-
-                if wallpaper.layers.iter().all(|l| !l.first_configure) {
-                    wallpaper.draw();
-                }
+                w_layer.needs_redraw = true;
+                wallpaper.draw();
 
                 break;
             }
@@ -559,6 +547,7 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSu
                             .find(|layer| layer.layer.wl_surface() == &surface)
                         {
                             layer.fractional_scale = Some(scale);
+                            layer.needs_redraw = true;
                             wallpaper.draw(); // XXX
                             break;
                         }
