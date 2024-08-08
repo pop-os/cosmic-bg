@@ -36,6 +36,8 @@ pub struct Wallpaper {
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
     queue_handle: QueueHandle<CosmicBg>,
     current_source: Option<Source>,
+    // Cache of source image, if `current_source` is a `Source::Path`
+    current_image: Option<image::DynamicImage>,
     timer_token: Option<RegistrationToken>,
     new_image: bool,
 }
@@ -59,6 +61,7 @@ impl Wallpaper {
             entry,
             layers: Vec::new(),
             current_source: None,
+            current_image: None,
             image_queue: VecDeque::default(),
             new_image: false,
             timer_token: None,
@@ -98,40 +101,57 @@ impl Wallpaper {
         let start = Instant::now();
         let mut cur_resized_img: Option<DynamicImage> = None;
 
-        for layer in self
+        // Only draw if all layers have been configured with size, and scale
+        if self
             .layers
-            .iter_mut()
-            .filter(|layer| !layer.first_configure)
+            .iter()
+            .any(|l| l.size.is_none() || l.fractional_scale.is_none())
         {
+            return;
+        }
+
+        for layer in self.layers.iter_mut().filter(|layer| layer.needs_redraw) {
             let Some(pool) = layer.pool.as_mut() else {
                 continue;
             };
 
-            if cur_resized_img.as_ref().map_or(true, |img| {
-                img.width() != layer.width || img.height() != layer.height
-            }) {
-                let CosmicBgLayer { width, height, .. } = *layer;
+            let fractional_scale = layer.fractional_scale.unwrap();
+            let (width, height) = layer.size.unwrap();
+            let width = width * fractional_scale / 120;
+            let height = height * fractional_scale / 120;
+
+            if cur_resized_img
+                .as_ref()
+                .map_or(true, |img| img.width() != width || img.height() != height)
+            {
                 let Some(source) = self.current_source.as_ref() else {
                     tracing::info!("No source for wallpaper");
                     continue;
                 };
                 cur_resized_img = match source {
                     Source::Path(ref path) => {
-                        let img = &match ImageReader::open(&path) {
-                            Ok(img) => {
-                                match img.with_guessed_format().ok().and_then(|f| f.decode().ok()) {
-                                    Some(img) => img,
-                                    None => {
-                                        tracing::warn!(
-                                            "Could not decode image: {}",
-                                            path.display()
-                                        );
-                                        continue;
+                        if self.current_image.is_none() {
+                            self.current_image = Some(match ImageReader::open(&path) {
+                                Ok(img) => {
+                                    match img
+                                        .with_guessed_format()
+                                        .ok()
+                                        .and_then(|f| f.decode().ok())
+                                    {
+                                        Some(img) => img,
+                                        None => {
+                                            tracing::warn!(
+                                                "Could not decode image: {}",
+                                                path.display()
+                                            );
+                                            continue;
+                                        }
                                     }
                                 }
-                            }
-                            Err(_) => continue,
-                        };
+                                Err(_) => continue,
+                            });
+                        }
+                        let img = self.current_image.as_ref().unwrap();
 
                         match self.entry.scaling_mode {
                             ScalingMode::Fit(color) => {
@@ -172,17 +192,13 @@ impl Wallpaper {
 
             let image = cur_resized_img.as_ref().unwrap();
 
-            let buffer_result = crate::draw::canvas(
-                pool,
-                image,
-                layer.width as i32,
-                layer.height as i32,
-                layer.width as i32 * 4,
-            );
+            let buffer_result =
+                crate::draw::canvas(pool, image, width as i32, height as i32, width as i32 * 4);
 
             match buffer_result {
                 Ok(buffer) => {
                     crate::draw::layer_surface(layer, &self.queue_handle, &buffer);
+                    layer.needs_redraw = false;
 
                     let elapsed = Instant::now().duration_since(start);
 
@@ -260,12 +276,14 @@ impl Wallpaper {
 
                 image_queue.pop_front().map(|current_image_path| {
                     self.current_source = Some(Source::Path(current_image_path.clone()));
+                    self.current_image = None;
                     image_queue.push_back(current_image_path);
                 });
             }
 
             Source::Color(ref c) => {
                 self.current_source = Some(Source::Color(c.clone()));
+                self.current_image = None;
             }
         };
         if let Err(err) = self.save_state() {
@@ -328,6 +346,7 @@ impl Wallpaper {
 
                         while let Some(next) = item.image_queue.pop_front() {
                             item.current_source = Some(Source::Path(next.clone()));
+                            item.current_image = None;
                             if let Err(err) = item.save_state() {
                                 error!("{err}");
                             }

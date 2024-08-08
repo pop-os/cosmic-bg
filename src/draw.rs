@@ -46,8 +46,7 @@ pub fn layer_surface(
     queue_handle: &QueueHandle<CosmicBg>,
     buffer: &Buffer,
 ) {
-    let width = layer.width;
-    let height = layer.height;
+    let (width, height) = layer.size.unwrap();
 
     let wl_surface = layer.layer.wl_surface();
 
@@ -64,6 +63,8 @@ pub fn layer_surface(
     if let Err(why) = buffer.attach_to(wl_surface) {
         tracing::error!(?why, "buffer attachment failed");
     }
+
+    layer.viewport.set_destination(width as i32, height as i32);
 
     wl_surface.commit();
 }
