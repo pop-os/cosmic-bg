@@ -304,7 +304,6 @@ impl CosmicBg {
         layer.set_anchor(Anchor::all());
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(width, height);
         surface.commit();
 
         CosmicBgLayer {
