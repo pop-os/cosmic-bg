@@ -36,6 +36,8 @@ pub struct Wallpaper {
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
     queue_handle: QueueHandle<CosmicBg>,
     current_source: Option<Source>,
+    // Cache of source image, if `current_source` is a `Source::Path`
+    current_image: Option<image::DynamicImage>,
     timer_token: Option<RegistrationToken>,
     new_image: bool,
 }
@@ -59,6 +61,7 @@ impl Wallpaper {
             entry,
             layers: Vec::new(),
             current_source: None,
+            current_image: None,
             image_queue: VecDeque::default(),
             new_image: false,
             timer_token: None,
@@ -117,21 +120,28 @@ impl Wallpaper {
                 };
                 cur_resized_img = match source {
                     Source::Path(ref path) => {
-                        let img = &match ImageReader::open(&path) {
-                            Ok(img) => {
-                                match img.with_guessed_format().ok().and_then(|f| f.decode().ok()) {
-                                    Some(img) => img,
-                                    None => {
-                                        tracing::warn!(
-                                            "Could not decode image: {}",
-                                            path.display()
-                                        );
-                                        continue;
+                        if self.current_image.is_none() {
+                            self.current_image = Some(match ImageReader::open(&path) {
+                                Ok(img) => {
+                                    match img
+                                        .with_guessed_format()
+                                        .ok()
+                                        .and_then(|f| f.decode().ok())
+                                    {
+                                        Some(img) => img,
+                                        None => {
+                                            tracing::warn!(
+                                                "Could not decode image: {}",
+                                                path.display()
+                                            );
+                                            continue;
+                                        }
                                     }
                                 }
-                            }
-                            Err(_) => continue,
-                        };
+                                Err(_) => continue,
+                            });
+                        }
+                        let img = self.current_image.as_ref().unwrap();
 
                         match self.entry.scaling_mode {
                             ScalingMode::Fit(color) => {
