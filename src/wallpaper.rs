@@ -106,7 +106,16 @@ impl Wallpaper {
                 continue;
             };
 
-            let (width, height) = layer.size.unwrap();
+            let Some(fractional_scale) = layer.fractional_scale else {
+                continue;
+            };
+
+            let Some((width, height)) = layer.size else {
+                continue;
+            };
+
+            let width = width * fractional_scale / 120;
+            let height = height * fractional_scale / 120;
 
             if cur_resized_img
                 .as_ref()
