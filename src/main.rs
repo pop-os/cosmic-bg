@@ -17,19 +17,29 @@ use sctk::{
         calloop,
         calloop_wayland_source::WaylandSource,
         client::{
+            delegate_noop,
             globals::registry_queue_init,
             protocol::{
                 wl_output::{self, WlOutput},
                 wl_surface,
             },
-            Connection, QueueHandle,
+            Connection, Dispatch, Proxy, QueueHandle, Weak,
+        },
+        protocols::wp::{
+            fractional_scale::v1::client::{
+                wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+            },
+            viewporter::client::{wp_viewport, wp_viewporter},
         },
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    shell::wlr_layer::{
-        Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-        LayerSurfaceConfigure,
+    shell::{
+        wlr_layer::{
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            LayerSurfaceConfigure,
+        },
+        WaylandSurface,
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
@@ -45,11 +55,13 @@ extern "C" {
 #[derive(Debug)]
 pub struct CosmicBgLayer {
     layer: LayerSurface,
+    viewport: wp_viewport::WpViewport,
     wl_output: WlOutput,
     output_info: OutputInfo,
     pool: Option<SlotPool>,
     needs_redraw: bool,
     size: Option<(u32, u32)>,
+    fractional_scale: Option<u32>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -200,6 +212,8 @@ fn main() -> color_eyre::Result<()> {
         compositor_state: CompositorState::bind(&globals, &qh).unwrap(),
         shm_state: Shm::bind(&globals, &qh).unwrap(),
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
+        viewporter: globals.bind(&qh, 1..=1, ()).unwrap(),
+        fractional_scale_manager: globals.bind(&qh, 1..=1, ()).unwrap(),
         qh,
         source_tx,
         loop_handle: event_loop.handle(),
@@ -227,6 +241,8 @@ pub struct CosmicBg {
     compositor_state: CompositorState,
     shm_state: Shm,
     layer_state: LayerShell,
+    viewporter: wp_viewporter::WpViewporter,
+    fractional_scale_manager: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     qh: QueueHandle<CosmicBg>,
     source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
@@ -301,11 +317,18 @@ impl CosmicBg {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         surface.commit();
 
+        let viewport = self.viewporter.get_viewport(&surface, &self.qh, ());
+
+        self.fractional_scale_manager
+            .get_fractional_scale(&surface, &self.qh, surface.downgrade());
+
         CosmicBgLayer {
             layer,
+            viewport,
             wl_output: output,
             output_info,
             size: None,
+            fractional_scale: None,
             needs_redraw: false,
             pool: None,
         }
@@ -518,6 +541,41 @@ delegate_output!(CosmicBg);
 delegate_shm!(CosmicBg);
 delegate_layer!(CosmicBg);
 delegate_registry!(CosmicBg);
+delegate_noop!(CosmicBg: wp_viewporter::WpViewporter);
+delegate_noop!(CosmicBg: wp_viewport::WpViewport);
+delegate_noop!(CosmicBg: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSurface>>
+    for CosmicBg
+{
+    fn event(
+        state: &mut CosmicBg,
+        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        surface: &Weak<wl_surface::WlSurface>,
+        _: &Connection,
+        _: &QueueHandle<CosmicBg>,
+    ) {
+        match event {
+            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
+                if let Ok(surface) = surface.upgrade() {
+                    for wallpaper in &mut state.wallpapers {
+                        if let Some(layer) = wallpaper
+                            .layers
+                            .iter_mut()
+                            .find(|layer| layer.layer.wl_surface() == &surface)
+                        {
+                            layer.fractional_scale = Some(scale);
+                            wallpaper.draw();
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
 
 impl ProvidesRegistryState for CosmicBg {
     fn registry(&mut self) -> &mut RegistryState {

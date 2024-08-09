@@ -64,6 +64,8 @@ pub fn layer_surface(
         tracing::error!(?why, "buffer attachment failed");
     }
 
+    layer.viewport.set_destination(width as i32, height as i32);
+
     wl_surface.commit();
 }
 
