@@ -45,13 +45,14 @@ pub fn layer_surface(
     layer: &mut CosmicBgLayer,
     queue_handle: &QueueHandle<CosmicBg>,
     buffer: &Buffer,
+    buffer_damage: (i32, i32),
 ) {
     let (width, height) = layer.size.unwrap();
 
     let wl_surface = layer.layer.wl_surface();
 
     // Damage the entire window
-    wl_surface.damage_buffer(0, 0, width as i32, height as i32);
+    wl_surface.damage_buffer(0, 0, buffer_damage.0, buffer_damage.1);
 
     // Request our next frame
     layer
