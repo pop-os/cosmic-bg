@@ -20,7 +20,7 @@ override_dh_auto_clean:
 	fi
 
 override_dh_auto_build:
-	just build-vendored
+	just build-vendored --features vendored-jpegxl
 
 override_dh_install:
 	just rootdir=$(DESTDIR) install
