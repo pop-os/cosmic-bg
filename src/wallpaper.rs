@@ -11,7 +11,9 @@ use std::{
 
 use cosmic_bg_config::{state::State, Color, Entry, SamplingMethod, ScalingMode, Source};
 use cosmic_config::CosmicConfigEntry;
-use image::{DynamicImage, ImageReader};
+use eyre::{eyre, OptionExt};
+use image::{DynamicImage, GrayAlphaImage, GrayImage, ImageReader, RgbImage, RgbaImage};
+use jxl_oxide::{EnumColourEncoding, JxlImage, PixelFormat};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{seq::SliceRandom, thread_rng};
 use sctk::reexports::{
@@ -389,35 +391,88 @@ fn current_image(output: &str) -> Option<Source> {
     wallpaper.map(|(_name, path)| path)
 }
 
-/// Decodes JPEG XL image files into `image::DynamicImage` via `jpegxl-rs`.
+/// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
 fn decode_jpegxl(path: &std::path::Path) -> Option<DynamicImage> {
-    use jpegxl_rs::image::ToDynamic;
+    let mut image = JxlImage::builder()
+        .open(path)
+        .expect("Failed to read image header");
+    image.request_color_encoding(EnumColourEncoding::srgb(
+        jxl_oxide::RenderingIntent::Relative,
+    ));
+    let render = image.render_frame(0).map_err(|e| eyre!("{e}"));
+    let result: Option<DynamicImage> = match render {
+        Ok(render) => {
+            let framebuffer = render.image_all_channels();
+            let output = match image.pixel_format() {
+                PixelFormat::Graya => GrayAlphaImage::from_raw(
+                    framebuffer.width() as u32,
+                    framebuffer.height() as u32,
+                    framebuffer
+                        .buf()
+                        .iter()
+                        .map(|x| x * 255. + 0.5)
+                        .map(|x| x as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .map(DynamicImage::ImageLumaA8)
+                .ok_or_eyre("Can't decode gray alpha buffer"),
+                PixelFormat::Gray => GrayImage::from_raw(
+                    framebuffer.width() as u32,
+                    framebuffer.height() as u32,
+                    framebuffer
+                        .buf()
+                        .iter()
+                        .map(|x| x * 255. + 0.5)
+                        .map(|x| x as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .map(DynamicImage::ImageLuma8)
+                .ok_or_eyre("Can't decode gray buffer"),
+                PixelFormat::Rgba => RgbaImage::from_raw(
+                    framebuffer.width() as u32,
+                    framebuffer.height() as u32,
+                    framebuffer
+                        .buf()
+                        .iter()
+                        .map(|x| x * 255. + 0.5)
+                        .map(|x| x as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .map(DynamicImage::ImageRgba8)
+                .ok_or_eyre("Can't decode rgba buffer"),
+                PixelFormat::Rgb => RgbImage::from_raw(
+                    framebuffer.width() as u32,
+                    framebuffer.height() as u32,
+                    framebuffer
+                        .buf()
+                        .iter()
+                        .map(|x| x * 255. + 0.5)
+                        .map(|x| x as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .map(DynamicImage::ImageRgb8)
+                .ok_or_eyre("Can't decode rgb buffer"),
+                //TODO: handle this
+                PixelFormat::Cmyk => return None,
+                PixelFormat::Cmyka => return None,
+            };
 
-    let jxl_file = match std::fs::read(path) {
-        Ok(file) => file,
-        Err(why) => {
-            tracing::warn!(?why, "could not read image: {}", path.display());
-            return None;
-        }
-    };
-
-    let jxl_decode_result = jpegxl_rs::decoder_builder()
-        .parallel_runner(&jpegxl_rs::ThreadsRunner::default())
-        .build()
-        .and_then(move |decoder| decoder.decode_to_image(&jxl_file));
-
-    match jxl_decode_result {
-        Ok(Some(image)) => Some(image),
-        Ok(None) => {
-            tracing::warn!(
-                "decoded image could not be represented as a DynamicImage: {}",
-                path.display()
-            );
-            None
+            match output {
+                Ok(image) => Some(image),
+                Err(why) => {
+                    tracing::warn!(
+                        ?why,
+                        "could not decode image pixel format: {}",
+                        path.display()
+                    );
+                    None
+                }
+            }
         }
         Err(why) => {
             tracing::warn!(?why, "could not decode image: {}", path.display());
             None
         }
-    }
+    };
+    result
 }
