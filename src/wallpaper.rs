@@ -9,9 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::{anyhow, Context};
 use cosmic_bg_config::{state::State, Color, Entry, SamplingMethod, ScalingMode, Source};
 use cosmic_config::CosmicConfigEntry;
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, GrayAlphaImage, ImageReader, RgbImage, RgbaImage};
+use jxl_oxide::{EnumColourEncoding, JxlImage, PixelFormat};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{seq::SliceRandom, thread_rng};
 use sctk::reexports::{
@@ -389,35 +391,91 @@ fn current_image(output: &str) -> Option<Source> {
     wallpaper.map(|(_name, path)| path)
 }
 
-/// Decodes JPEG XL image files into `image::DynamicImage` via `jpegxl-rs`.
+/// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
 fn decode_jpegxl(path: &std::path::Path) -> Option<DynamicImage> {
-    use jpegxl_rs::image::ToDynamic;
-
-    let jxl_file = match std::fs::read(path) {
-        Ok(file) => file,
-        Err(why) => {
-            tracing::warn!(?why, "could not read image: {}", path.display());
-            return None;
-        }
-    };
-
-    let jxl_decode_result = jpegxl_rs::decoder_builder()
-        .parallel_runner(&jpegxl_rs::ThreadsRunner::default())
-        .build()
-        .and_then(move |decoder| decoder.decode_to_image(&jxl_file));
-
-    match jxl_decode_result {
-        Ok(Some(image)) => Some(image),
-        Ok(None) => {
-            tracing::warn!(
-                "decoded image could not be represented as a DynamicImage: {}",
-                path.display()
-            );
-            None
+    let mut image = JxlImage::builder()
+        .open(path)
+        .expect("Failed to read image header");
+    image.request_color_encoding(EnumColourEncoding::srgb(
+        jxl_oxide::RenderingIntent::Relative,
+    ));
+    let render = image
+        .render_frame(0)
+        .map_err(|e| anyhow!("{e}"));
+    let result: Option<DynamicImage> = match render {
+        Ok(render) => {
+            let framebuffer = render.image_all_channels();
+            let output = match image.pixel_format() {
+                PixelFormat::Graya => {
+                    let float_image = GrayAlphaImage::from_raw(
+                        framebuffer.width() as u32,
+                        framebuffer.height() as u32,
+                        framebuffer
+                            .buf()
+                            .iter()
+                            .map(|x| x * 255. + 0.5)
+                            .map(|x| x as u8)
+                            .collect::<Vec<_>>(),
+                    )
+                    .context("Can't decode gray alpha buffer")
+                    .unwrap();
+                    Some(DynamicImage::ImageLumaA8(float_image))
+                }
+                PixelFormat::Gray => {
+                    let float_image = image::GrayImage::from_raw(
+                        framebuffer.width() as u32,
+                        framebuffer.height() as u32,
+                        framebuffer
+                            .buf()
+                            .iter()
+                            .map(|x| x * 255. + 0.5)
+                            .map(|x| x as u8)
+                            .collect::<Vec<_>>(),
+                    )
+                    .context("Can't decode gray buffer")
+                    .unwrap();
+                    Some(DynamicImage::ImageLuma8(float_image))
+                }
+                PixelFormat::Rgba => {
+                    let float_image = RgbaImage::from_raw(
+                        framebuffer.width() as u32,
+                        framebuffer.height() as u32,
+                        framebuffer
+                            .buf()
+                            .iter()
+                            .map(|x| x * 255. + 0.5)
+                            .map(|x| x as u8)
+                            .collect::<Vec<_>>(),
+                    )
+                    .context("Can't decode rgba buffer")
+                    .unwrap();
+                    Some(DynamicImage::ImageRgba8(float_image))
+                }
+                PixelFormat::Rgb => {
+                    let float_image = RgbImage::from_raw(
+                        framebuffer.width() as u32,
+                        framebuffer.height() as u32,
+                        framebuffer
+                            .buf()
+                            .iter()
+                            .map(|x| x * 255. + 0.5)
+                            .map(|x| x as u8)
+                            .collect::<Vec<_>>(),
+                    )
+                    .context("Can't decode rgb buffer")
+                    .unwrap();
+                    Some(DynamicImage::ImageRgb8(float_image))
+                }
+                //TODO: handle this
+                PixelFormat::Cmyk => None,
+                PixelFormat::Cmyka => None,
+            };
+            output
         }
         Err(why) => {
             tracing::warn!(?why, "could not decode image: {}", path.display());
             None
         }
-    }
+    };
+    result
 }

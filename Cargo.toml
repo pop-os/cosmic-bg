@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.89"
 color-eyre = "0.6.3"
 colorgrad = { workspace = true }
 cosmic-bg-config = { path = "./config" }
@@ -11,7 +12,7 @@ dirs = "5.0.1"
 eyre = "0.6.12"
 fast_image_resize = { version = "4.2.1", features = ["image"] }
 image = { workspace = true, features = ["hdr", "jpeg", "png", "rayon", "webp"] }
-jpegxl-rs = { version = "0.11.1", features = ["vendored"] }
+jxl-oxide = "0.9.0"
 notify = "6.1.1"
 rand = "0.8"
 ron = { workspace = true }
