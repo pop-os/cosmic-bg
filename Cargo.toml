@@ -3,6 +3,9 @@ name = "cosmic-bg"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+vendored-jpegxl = ["jpegxl-rs/vendored"]
+
 [dependencies]
 color-eyre = "0.6.3"
 colorgrad = { workspace = true }
@@ -11,7 +14,7 @@ dirs = "5.0.1"
 eyre = "0.6.12"
 fast_image_resize = { version = "4.2.1", features = ["image"] }
 image = { workspace = true, features = ["hdr", "jpeg", "png", "rayon", "webp"] }
-jpegxl-rs = { version = "0.11.1", features = ["vendored"] }
+jpegxl-rs = "0.11.1"
 notify = "6.1.1"
 rand = "0.8"
 ron = { workspace = true }
