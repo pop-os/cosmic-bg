@@ -13,7 +13,6 @@ COSMIC session service which applies backgrounds to displays. Supports the follo
 
 Developers should install Rust from from https://rustup.rs/.
 
-- cmake
 - just
 - cargo / rustc
 - libwayland-dev
