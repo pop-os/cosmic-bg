@@ -131,8 +131,15 @@ impl Wallpaper {
                         if self.current_image.is_none() {
                             self.current_image = Some(match path.extension() {
                                 Some(ext) if ext == "jxl" => match decode_jpegxl(&path) {
-                                    Some(image) => image,
-                                    None => continue,
+                                    Ok(image) => image,
+                                    Err(why) => {
+                                        tracing::warn!(
+                                            ?why,
+                                            "jpegl-xl image decode failed: {}",
+                                            path.display()
+                                        );
+                                        continue;
+                                    }
                                 },
 
                                 _ => match ImageReader::open(&path) {
@@ -392,87 +399,72 @@ fn current_image(output: &str) -> Option<Source> {
 }
 
 /// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
-fn decode_jpegxl(path: &std::path::Path) -> Option<DynamicImage> {
+fn decode_jpegxl(path: &std::path::Path) -> eyre::Result<DynamicImage> {
     let mut image = JxlImage::builder()
         .open(path)
-        .expect("Failed to read image header");
+        .map_err(|why| eyre!("failed to read image header: {why}"))?;
+
     image.request_color_encoding(EnumColourEncoding::srgb(
         jxl_oxide::RenderingIntent::Relative,
     ));
-    let render = image.render_frame(0).map_err(|e| eyre!("{e}"));
-    let result: Option<DynamicImage> = match render {
-        Ok(render) => {
-            let framebuffer = render.image_all_channels();
-            let output = match image.pixel_format() {
-                PixelFormat::Graya => GrayAlphaImage::from_raw(
-                    framebuffer.width() as u32,
-                    framebuffer.height() as u32,
-                    framebuffer
-                        .buf()
-                        .iter()
-                        .map(|x| x * 255. + 0.5)
-                        .map(|x| x as u8)
-                        .collect::<Vec<_>>(),
-                )
-                .map(DynamicImage::ImageLumaA8)
-                .ok_or_eyre("Can't decode gray alpha buffer"),
-                PixelFormat::Gray => GrayImage::from_raw(
-                    framebuffer.width() as u32,
-                    framebuffer.height() as u32,
-                    framebuffer
-                        .buf()
-                        .iter()
-                        .map(|x| x * 255. + 0.5)
-                        .map(|x| x as u8)
-                        .collect::<Vec<_>>(),
-                )
-                .map(DynamicImage::ImageLuma8)
-                .ok_or_eyre("Can't decode gray buffer"),
-                PixelFormat::Rgba => RgbaImage::from_raw(
-                    framebuffer.width() as u32,
-                    framebuffer.height() as u32,
-                    framebuffer
-                        .buf()
-                        .iter()
-                        .map(|x| x * 255. + 0.5)
-                        .map(|x| x as u8)
-                        .collect::<Vec<_>>(),
-                )
-                .map(DynamicImage::ImageRgba8)
-                .ok_or_eyre("Can't decode rgba buffer"),
-                PixelFormat::Rgb => RgbImage::from_raw(
-                    framebuffer.width() as u32,
-                    framebuffer.height() as u32,
-                    framebuffer
-                        .buf()
-                        .iter()
-                        .map(|x| x * 255. + 0.5)
-                        .map(|x| x as u8)
-                        .collect::<Vec<_>>(),
-                )
-                .map(DynamicImage::ImageRgb8)
-                .ok_or_eyre("Can't decode rgb buffer"),
-                //TODO: handle this
-                PixelFormat::Cmyk => return None,
-                PixelFormat::Cmyka => return None,
-            };
 
-            match output {
-                Ok(image) => Some(image),
-                Err(why) => {
-                    tracing::warn!(
-                        ?why,
-                        "could not decode image pixel format: {}",
-                        path.display()
-                    );
-                    None
-                }
-            }
-        }
-        Err(why) => {
-            tracing::warn!(?why, "could not decode image: {}", path.display());
-            None
-        }
-    };
-    result
+    let render = image
+        .render_frame(0)
+        .map_err(|why| eyre!("failed to render image frame: {why}"))?;
+
+    let framebuffer = render.image_all_channels();
+
+    match image.pixel_format() {
+        PixelFormat::Graya => GrayAlphaImage::from_raw(
+            framebuffer.width() as u32,
+            framebuffer.height() as u32,
+            framebuffer
+                .buf()
+                .iter()
+                .map(|x| x * 255. + 0.5)
+                .map(|x| x as u8)
+                .collect::<Vec<_>>(),
+        )
+        .map(DynamicImage::ImageLumaA8)
+        .ok_or_eyre("Can't decode gray alpha buffer"),
+        PixelFormat::Gray => GrayImage::from_raw(
+            framebuffer.width() as u32,
+            framebuffer.height() as u32,
+            framebuffer
+                .buf()
+                .iter()
+                .map(|x| x * 255. + 0.5)
+                .map(|x| x as u8)
+                .collect::<Vec<_>>(),
+        )
+        .map(DynamicImage::ImageLuma8)
+        .ok_or_eyre("Can't decode gray buffer"),
+        PixelFormat::Rgba => RgbaImage::from_raw(
+            framebuffer.width() as u32,
+            framebuffer.height() as u32,
+            framebuffer
+                .buf()
+                .iter()
+                .map(|x| x * 255. + 0.5)
+                .map(|x| x as u8)
+                .collect::<Vec<_>>(),
+        )
+        .map(DynamicImage::ImageRgba8)
+        .ok_or_eyre("Can't decode rgba buffer"),
+        PixelFormat::Rgb => RgbImage::from_raw(
+            framebuffer.width() as u32,
+            framebuffer.height() as u32,
+            framebuffer
+                .buf()
+                .iter()
+                .map(|x| x * 255. + 0.5)
+                .map(|x| x as u8)
+                .collect::<Vec<_>>(),
+        )
+        .map(DynamicImage::ImageRgb8)
+        .ok_or_eyre("Can't decode rgb buffer"),
+        //TODO: handle this
+        PixelFormat::Cmyk => Err(eyre!("unsupported pixel format: CMYK")),
+        PixelFormat::Cmyka => Err(eyre!("unsupported pixel format: CMYKA")),
+    }
 }
