@@ -123,27 +123,35 @@ impl Wallpaper {
                     tracing::info!("No source for wallpaper");
                     continue;
                 };
+
                 cur_resized_img = match source {
                     Source::Path(ref path) => {
                         if self.current_image.is_none() {
-                            self.current_image = Some(match ImageReader::open(&path) {
-                                Ok(img) => {
-                                    match img
-                                        .with_guessed_format()
-                                        .ok()
-                                        .and_then(|f| f.decode().ok())
-                                    {
-                                        Some(img) => img,
-                                        None => {
-                                            tracing::warn!(
-                                                "Could not decode image: {}",
-                                                path.display()
-                                            );
-                                            continue;
+                            self.current_image = Some(match path.extension() {
+                                Some(ext) if ext == "jxl" => match decode_jpegxl(&path) {
+                                    Some(image) => image,
+                                    None => continue,
+                                },
+
+                                _ => match ImageReader::open(&path) {
+                                    Ok(img) => {
+                                        match img
+                                            .with_guessed_format()
+                                            .ok()
+                                            .and_then(|f| f.decode().ok())
+                                        {
+                                            Some(img) => img,
+                                            None => {
+                                                tracing::warn!(
+                                                    "could not decode image: {}",
+                                                    path.display()
+                                                );
+                                                continue;
+                                            }
                                         }
                                     }
-                                }
-                                Err(_) => continue,
+                                    Err(_) => continue,
+                                },
                             });
                         }
                         let img = self.current_image.as_ref().unwrap();
@@ -379,4 +387,37 @@ fn current_image(output: &str) -> Option<Source> {
     };
 
     wallpaper.map(|(_name, path)| path)
+}
+
+/// Decodes JPEG XL image files into `image::DynamicImage` via `jpegxl-rs`.
+fn decode_jpegxl(path: &std::path::Path) -> Option<DynamicImage> {
+    use jpegxl_rs::image::ToDynamic;
+
+    let jxl_file = match std::fs::read(path) {
+        Ok(file) => file,
+        Err(why) => {
+            tracing::warn!(?why, "could not read image: {}", path.display());
+            return None;
+        }
+    };
+
+    let jxl_decode_result = jpegxl_rs::decoder_builder()
+        .parallel_runner(&jpegxl_rs::ThreadsRunner::default())
+        .build()
+        .and_then(move |decoder| decoder.decode_to_image(&jxl_file));
+
+    match jxl_decode_result {
+        Ok(Some(image)) => Some(image),
+        Ok(None) => {
+            tracing::warn!(
+                "decoded image could not be represented as a DynamicImage: {}",
+                path.display()
+            );
+            None
+        }
+        Err(why) => {
+            tracing::warn!(?why, "could not decode image: {}", path.display());
+            None
+        }
+    }
 }
