@@ -36,6 +36,7 @@ rev = "8c6f2c9ebc5c2c04fe168c2d941f8c5a416b33bb"
 features = ["calloop"]
 
 [profile.release]
+lto = "fat"
 opt-level = 3
 
 # TODO: Remove when sctk is updated to latest calloop, like cosmic-config
