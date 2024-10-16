@@ -1,2 +1,2 @@
-app-name = Cosmic Háttér
+app-name = COSMIC Háttér
 translator-credits = Csanád Mózner
