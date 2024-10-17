@@ -2,10 +2,24 @@
 
 //! Background scaling methods such as fit, stretch, and zoom.
 
+use cosmic_bg_config::ScalingMode;
 use image::imageops::FilterType;
 use image::{DynamicImage, Pixel};
 
-pub fn fit(
+pub fn scale(
+    img: &image::DynamicImage,
+    scaling_mode: ScalingMode,
+    layer_width: u32,
+    layer_height: u32,
+) -> image::DynamicImage {
+    match scaling_mode {
+        ScalingMode::Fit(color) => fit(img, &color, layer_width, layer_height),
+        ScalingMode::Zoom => zoom(img, layer_width, layer_height),
+        ScalingMode::Stretch => stretch(img, layer_width, layer_height),
+    }
+}
+
+fn fit(
     img: &image::DynamicImage,
     color: &[f32; 3],
     layer_width: u32,
@@ -36,15 +50,11 @@ pub fn fit(
     DynamicImage::from(filled_image)
 }
 
-pub fn stretch(
-    img: &image::DynamicImage,
-    layer_width: u32,
-    layer_height: u32,
-) -> image::DynamicImage {
+fn stretch(img: &image::DynamicImage, layer_width: u32, layer_height: u32) -> image::DynamicImage {
     resize(img, layer_width, layer_height)
 }
 
-pub fn zoom(img: &image::DynamicImage, layer_width: u32, layer_height: u32) -> image::DynamicImage {
+fn zoom(img: &image::DynamicImage, layer_width: u32, layer_height: u32) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
 
     let ratio = (layer_width as f64 / w as f64).max(layer_height as f64 / h as f64);

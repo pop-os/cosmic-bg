@@ -184,7 +184,7 @@ pub enum SamplingMethod {
 }
 
 /// Image scaling mode
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq)]
 pub enum ScalingMode {
     // Fit the image and fill the rest of the area with the given RGB color
     Fit([f32; 3]),
