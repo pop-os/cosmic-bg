@@ -12,6 +12,10 @@ image.workspace = true
 ron.workspace = true
 serde = { version = "1.0.208", features = ["derive"] }
 tracing.workspace = true
+fast_image_resize = { version = "5.0.0", features = ["image"], optional = true }
+
+[features]
+scaler = ["fast_image_resize"]
 
 [dependencies.cosmic-config]
 git = "https://github.com/pop-os/libcosmic"

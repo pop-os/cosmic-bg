@@ -319,6 +319,7 @@ dependencies = [
  "colorgrad",
  "cosmic-config",
  "derive_setters",
+ "fast_image_resize",
  "image",
  "ron",
  "serde",

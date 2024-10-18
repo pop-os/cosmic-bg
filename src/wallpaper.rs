@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cosmic_bg_config::{state::State, Color, Entry, SamplingMethod, Source};
+use cosmic_bg_config::{scaler, state::State, Color, Entry, SamplingMethod, Source};
 use cosmic_config::CosmicConfigEntry;
 use eyre::{eyre, OptionExt};
 use image::{DynamicImage, GrayAlphaImage, GrayImage, ImageReader, RgbImage, RgbaImage};
@@ -165,12 +165,7 @@ impl Wallpaper {
                         }
                         let img = self.current_image.as_ref().unwrap();
 
-                        Some(crate::scaler::scale(
-                            img,
-                            self.entry.scaling_mode,
-                            width,
-                            height,
-                        ))
+                        Some(scaler::scale(img, self.entry.scaling_mode, width, height))
                     }
 
                     Source::Color(Color::Single([ref r, ref g, ref b])) => {

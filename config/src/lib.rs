@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
+#[cfg(feature = "scaler")]
+pub mod scaler;
 pub mod state;
 
 use cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};

@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 color-eyre = "0.6.3"
 colorgrad = { workspace = true }
-cosmic-bg-config = { path = "./config" }
+cosmic-bg-config = { path = "./config", features = ["scaler"] }
+cosmic-config = { features = ["calloop"], workspace=true }
 dirs = "5.0.1"
 eyre = "0.6.11"
 fast_image_resize = { version = "5.0.0", features = ["image"] }
@@ -30,10 +31,7 @@ colorgrad = "0.6.2"
 image = { version = "0.25.2", default-features = false }
 ron = "0.8"
 tracing = "0.1.40"
-
-[dependencies.cosmic-config]
-git = "https://github.com/pop-os/libcosmic"
-features = ["calloop"]
+cosmic-config = { git = "https://github.com/pop-os/libcosmic" }
 
 [profile.release]
 opt-level = 3

@@ -2,7 +2,7 @@
 
 //! Background scaling methods such as fit, stretch, and zoom.
 
-use cosmic_bg_config::ScalingMode;
+use crate::ScalingMode;
 use image::imageops::FilterType;
 use image::{DynamicImage, Pixel};
 
