@@ -3,7 +3,6 @@
 mod colored;
 mod draw;
 mod img_source;
-mod scaler;
 mod wallpaper;
 
 use cosmic_bg_config::{state::State, Config};
