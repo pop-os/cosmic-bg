@@ -43,13 +43,18 @@ use sctk::{
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
+use std::os::raw::c_int;
 use tracing::error;
 use tracing_subscriber::prelude::*;
 use wallpaper::Wallpaper;
 
 #[cfg(target_env = "gnu")]
+const M_MMAP_THRESHOLD: c_int = -3;
+
+#[cfg(target_env = "gnu")]
 extern "C" {
     fn malloc_trim(pad: usize);
+    fn mallopt(param: c_int, value: c_int) -> c_int;
 }
 
 #[derive(Debug)]
@@ -66,6 +71,12 @@ pub struct CosmicBgLayer {
 
 #[allow(clippy::too_many_lines)]
 fn main() -> color_eyre::Result<()> {
+    // Prevents glibc from hoarding memory via memory fragmentation.
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 65536);
+    }
+
     color_eyre::install()?;
 
     if std::env::var("RUST_SPANTRACE").is_err() {
