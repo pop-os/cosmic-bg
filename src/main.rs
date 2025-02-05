@@ -3,7 +3,6 @@
 mod colored;
 mod draw;
 mod img_source;
-mod scaler;
 mod wallpaper;
 
 /// Access glibc malloc tunables.

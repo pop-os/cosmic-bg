@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
+#[cfg(feature = "scaler")]
+pub mod scaler;
 pub mod state;
 
 use cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
@@ -184,7 +186,7 @@ pub enum SamplingMethod {
 }
 
 /// Image scaling mode
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq)]
 pub enum ScalingMode {
     // Fit the image and fill the rest of the area with the given RGB color
     Fit([f32; 3]),
