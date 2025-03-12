@@ -6,6 +6,32 @@ mod img_source;
 mod scaler;
 mod wallpaper;
 
+/// Access glibc malloc tunables.
+#[cfg(target_env = "gnu")]
+mod malloc {
+    use std::os::raw::c_int;
+    const M_MMAP_THRESHOLD: c_int = -3;
+
+    extern "C" {
+        fn malloc_trim(pad: usize);
+        fn mallopt(param: c_int, value: c_int) -> c_int;
+    }
+
+    /// Prevents glibc from hoarding memory via memory fragmentation.
+    pub fn limit_mmap_threshold() {
+        unsafe {
+            mallopt(M_MMAP_THRESHOLD, 65536);
+        }
+    }
+
+    /// Asks glibc to trim malloc arenas.
+    pub fn trim() {
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+
 use cosmic_bg_config::{state::State, Config};
 use cosmic_config::{calloop::ConfigWatchSource, CosmicConfigEntry};
 use eyre::Context;
@@ -43,14 +69,10 @@ use sctk::{
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
+
 use tracing::error;
 use tracing_subscriber::prelude::*;
 use wallpaper::Wallpaper;
-
-#[cfg(target_env = "gnu")]
-extern "C" {
-    fn malloc_trim(pad: usize);
-}
 
 #[derive(Debug)]
 pub struct CosmicBgLayer {
@@ -66,6 +88,10 @@ pub struct CosmicBgLayer {
 
 #[allow(clippy::too_many_lines)]
 fn main() -> color_eyre::Result<()> {
+    // Prevents glibc from hoarding memory via memory fragmentation.
+    #[cfg(target_env = "gnu")]
+    malloc::limit_mmap_threshold();
+
     color_eyre::install()?;
 
     if std::env::var("RUST_SPANTRACE").is_err() {
@@ -151,9 +177,7 @@ fn main() -> color_eyre::Result<()> {
                         state.apply_backgrounds();
 
                         #[cfg(target_env = "gnu")]
-                        unsafe {
-                            malloc_trim(0);
-                        }
+                        malloc::trim();
 
                         tracing::debug!(
                             same_on_all = state.config.same_on_all,
@@ -213,7 +237,7 @@ fn main() -> color_eyre::Result<()> {
         shm_state: Shm::bind(&globals, &qh).unwrap(),
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
         viewporter: globals.bind(&qh, 1..=1, ()).unwrap(),
-        fractional_scale_manager: globals.bind(&qh, 1..=1, ()).unwrap(),
+        fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
         qh,
         source_tx,
         loop_handle: event_loop.handle(),
@@ -242,7 +266,7 @@ pub struct CosmicBg {
     shm_state: Shm,
     layer_state: LayerShell,
     viewporter: wp_viewporter::WpViewporter,
-    fractional_scale_manager: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     qh: QueueHandle<CosmicBg>,
     source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
@@ -319,8 +343,13 @@ impl CosmicBg {
 
         let viewport = self.viewporter.get_viewport(&surface, &self.qh, ());
 
-        self.fractional_scale_manager
-            .get_fractional_scale(&surface, &self.qh, surface.downgrade());
+        let fractional_scale = if let Some(mngr) = self.fractional_scale_manager.as_ref() {
+            mngr.get_fractional_scale(&surface, &self.qh, surface.downgrade());
+            None
+        } else {
+            (self.compositor_state.wl_compositor().version() < 6)
+                .then_some(output_info.scale_factor as u32 * 120)
+        };
 
         CosmicBgLayer {
             layer,
@@ -328,7 +357,7 @@ impl CosmicBg {
             wl_output: output,
             output_info,
             size: None,
-            fractional_scale: None,
+            fractional_scale,
             needs_redraw: false,
             pool: None,
         }
@@ -340,10 +369,22 @@ impl CompositorHandler for CosmicBg {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
     ) {
-        // Not needed for this example.
+        if self.fractional_scale_manager.is_none() {
+            for wallpaper in &mut self.wallpapers {
+                if let Some(layer) = wallpaper
+                    .layers
+                    .iter_mut()
+                    .find(|layer| layer.layer.wl_surface() == surface)
+                {
+                    layer.fractional_scale = Some(new_factor as u32 * 120);
+                    wallpaper.draw();
+                    break;
+                }
+            }
+        }
     }
 
     fn frame(
@@ -423,9 +464,26 @@ impl OutputHandler for CosmicBg {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
-        // TODO
+        if self.fractional_scale_manager.is_none()
+            && self.compositor_state.wl_compositor().version() < 6
+        {
+            let Some(output_info) = self.output_state.info(&output) else {
+                return;
+            };
+            for wallpaper in &mut self.wallpapers {
+                if let Some(layer) = wallpaper
+                    .layers
+                    .iter_mut()
+                    .find(|layer| layer.wl_output == output)
+                {
+                    layer.fractional_scale = Some(output_info.scale_factor as u32 * 120);
+                    wallpaper.draw();
+                    break;
+                }
+            }
+        }
     }
 
     fn output_destroyed(
