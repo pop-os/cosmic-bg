@@ -1,2 +1,2 @@
-app-name = COSMIC-achtergrondafbeeldingen
+app-name = COSMIC-achtergrondjes
 translator-credits = Ashley Wulber
