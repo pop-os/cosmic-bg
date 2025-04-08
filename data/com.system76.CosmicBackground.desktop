@@ -1,6 +1,8 @@
 [Desktop Entry]
-Name=Cosmic Background
-Comment=Write a GTK + Rust application
+Name=COSMIC Background
+Name[pl]=Tapeta COSMIC
+Comment=COSMIC Background desktop daemon
+Comment[pl]=Usługa tapety pulpitu COSMIC
 Type=Application
 Exec=cosmic-bg
 Terminal=false

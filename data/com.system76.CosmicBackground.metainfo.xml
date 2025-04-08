@@ -5,10 +5,13 @@
   <metadata_license>CC0</metadata_license>
   <!-- Insert your license of choice here -->
   <!-- <project_license>MIT</project_license> -->
-  <name>Cosmic Background</name>
-  <summary>Cosmic Background desktop daemon</summary>
+  <name>COSMIC Background</name>
+  <name xml:lang="pl">Tapeta COSMIC</name>
+  <summary>COSMIC Background desktop daemon</summary>
+  <summary xml:lang="pl">Usługa tapety pulpitu COSMIC</summary>
   <description>
-    <p>Cosmic Background desktop daemon</p>
+    <p>COSMIC Background desktop daemon</p>
+    <p xml:lang="pl">Usługa tapety pulpitu COSMIC</p>
   </description>
   <!-- <screenshots>
     <screenshot type="default">

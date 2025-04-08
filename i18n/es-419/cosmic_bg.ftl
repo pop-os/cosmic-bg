@@ -1,1 +1,1 @@
-app-name = Fondo de Cosmic
+app-name = Fondo de COSMIC
