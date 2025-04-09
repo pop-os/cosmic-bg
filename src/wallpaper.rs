@@ -230,6 +230,13 @@ impl Wallpaper {
 
     pub fn load_images(&mut self) {
         let mut image_queue = VecDeque::new();
+        let xdg_data_dirs: Vec<String> = match std::env::var("XDG_DATA_DIRS") {
+            Ok(raw_xdg_data_dirs) => raw_xdg_data_dirs
+                .split(':')
+                .map(|s| format!("{}/backgrounds/", s))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
 
         match self.entry.source {
             Source::Path(ref source) => {
@@ -237,7 +244,10 @@ impl Wallpaper {
 
                 if let Ok(source) = source.canonicalize() {
                     if source.is_dir() {
-                        if source.starts_with("/usr/share/backgrounds/") {
+                        if xdg_data_dirs
+                            .iter()
+                            .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
+                        {
                             // Store paths of wallpapers to be used for the slideshow.
                             for img_path in WalkDir::new(source)
                                 .follow_links(true)
