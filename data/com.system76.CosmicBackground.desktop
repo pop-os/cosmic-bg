@@ -1,7 +1,9 @@
 [Desktop Entry]
 Name=COSMIC Background
+Name[ar]=خَلفِيَّةُ كوزمِك
 Name[pl]=Tapeta COSMIC
 Comment=COSMIC Background desktop daemon
+Comment[ar]=نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ كوزمِك
 Comment[pl]=Usługa tapety pulpitu COSMIC
 Type=Application
 Exec=cosmic-bg
@@ -9,6 +11,7 @@ Terminal=false
 Categories=GNOME;GTK;
 # Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
 Keywords=Gnome;GTK;
+Keywords[ar]=جنوم;جي‌تي‌كي;
 # Translators: Do NOT translate or transliterate this text (this is an icon file name)!
 Icon=com.system76.CosmicBackground
 StartupNotify=true
