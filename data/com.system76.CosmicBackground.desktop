@@ -1,8 +1,10 @@
 [Desktop Entry]
 Name=COSMIC Background
+Name[zh_CN]=COSMIC 
 Name[ar]=خَلفِيَّةُ كوزمِك
 Name[pl]=Tapeta COSMIC
 Comment=COSMIC Background desktop daemon
+Comment[zh_CN]=COSMIC 背景桌面守护进程
 Comment[ar]=نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ كوزمِك
 Comment[pl]=Usługa tapety pulpitu COSMIC
 Type=Application
