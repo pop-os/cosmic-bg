@@ -8,13 +8,16 @@
   <name>COSMIC Background</name>
   <name xml:lang="ar">خَلفِيَّةُ كوزمِك</name>
   <name xml:lang="pl">Tapeta COSMIC</name>
+  <name xml:lang="ru">Фоны COSMIC</name>
   <summary>COSMIC Background desktop daemon</summary>
   <summary xml:lang="ar">نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ كوزمِك</summary>
   <summary xml:lang="pl">Usługa tapety pulpitu COSMIC</summary>
+  <summary xml:lang="ru">Демон фонов оболочки COSMIC</summary>
   <description>
     <p>COSMIC Background desktop daemon</p>
     <p xml:lang="ar">نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ كوزمِك</p>
     <p xml:lang="pl">Usługa tapety pulpitu COSMIC</p>
+    <p xml:lang="ru">Демон фонов оболочки COSMIC</p>
   </description>
   <!-- <screenshots>
     <screenshot type="default">
