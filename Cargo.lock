@@ -1139,6 +1139,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa635162d7d53c650ae9e429a4e354ac1d63f0d3b1bdd1991b400c22cd301a6d"
 dependencies = [
  "brotli-decompressor",
+ "bytemuck",
+ "image",
  "jxl-bitstream",
  "jxl-color",
  "jxl-frame",

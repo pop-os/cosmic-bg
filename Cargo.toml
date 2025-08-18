@@ -12,7 +12,7 @@ dirs = "6.0.0"
 eyre = "0.6.12"
 fast_image_resize = { version = "4.2.3", features = ["image"] }
 image = { workspace = true, features = ["hdr", "jpeg", "png", "rayon", "webp"] }
-jxl-oxide = "0.12.4"
+jxl-oxide = { version = "0.12.4", features = ["image"] }
 notify = "6.1.1"
 rand = "0.9.2"
 ron = { workspace = true }

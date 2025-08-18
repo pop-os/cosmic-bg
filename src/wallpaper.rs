@@ -4,16 +4,16 @@ use crate::{CosmicBg, CosmicBgLayer};
 
 use std::{
     collections::VecDeque,
-    fs,
+    fs::{self, File},
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
 use cosmic_config::CosmicConfigEntry;
-use eyre::{OptionExt, eyre};
-use image::{DynamicImage, GrayAlphaImage, GrayImage, ImageReader, RgbImage, RgbaImage};
-use jxl_oxide::{EnumColourEncoding, JxlImage, PixelFormat};
+use eyre::eyre;
+use image::{DynamicImage, ImageReader};
+use jxl_oxide::integration::JxlDecoder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{rng, seq::SliceRandom};
 use sctk::reexports::{
@@ -405,71 +405,11 @@ fn current_image(output: &str) -> Option<Source> {
 
 /// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
 fn decode_jpegxl(path: &std::path::Path) -> eyre::Result<DynamicImage> {
-    let mut image = JxlImage::builder()
-        .open(path)
-        .map_err(|why| eyre!("failed to read image header: {why}"))?;
+    let file = File::open(path).map_err(|why| eyre!("failed to open jxl image file: {why}"))?;
 
-    image.request_color_encoding(EnumColourEncoding::srgb(
-        jxl_oxide::RenderingIntent::Relative,
-    ));
+    let decoder =
+        JxlDecoder::new(file).map_err(|why| eyre!("failed to read jxl image header: {why}"))?;
 
-    let render = image
-        .render_frame(0)
-        .map_err(|why| eyre!("failed to render image frame: {why}"))?;
-
-    let framebuffer = render.image_all_channels();
-
-    match image.pixel_format() {
-        PixelFormat::Graya => GrayAlphaImage::from_raw(
-            framebuffer.width() as u32,
-            framebuffer.height() as u32,
-            framebuffer
-                .buf()
-                .iter()
-                .map(|x| x * 255. + 0.5)
-                .map(|x| x as u8)
-                .collect::<Vec<_>>(),
-        )
-        .map(DynamicImage::ImageLumaA8)
-        .ok_or_eyre("Can't decode gray alpha buffer"),
-        PixelFormat::Gray => GrayImage::from_raw(
-            framebuffer.width() as u32,
-            framebuffer.height() as u32,
-            framebuffer
-                .buf()
-                .iter()
-                .map(|x| x * 255. + 0.5)
-                .map(|x| x as u8)
-                .collect::<Vec<_>>(),
-        )
-        .map(DynamicImage::ImageLuma8)
-        .ok_or_eyre("Can't decode gray buffer"),
-        PixelFormat::Rgba => RgbaImage::from_raw(
-            framebuffer.width() as u32,
-            framebuffer.height() as u32,
-            framebuffer
-                .buf()
-                .iter()
-                .map(|x| x * 255. + 0.5)
-                .map(|x| x as u8)
-                .collect::<Vec<_>>(),
-        )
-        .map(DynamicImage::ImageRgba8)
-        .ok_or_eyre("Can't decode rgba buffer"),
-        PixelFormat::Rgb => RgbImage::from_raw(
-            framebuffer.width() as u32,
-            framebuffer.height() as u32,
-            framebuffer
-                .buf()
-                .iter()
-                .map(|x| x * 255. + 0.5)
-                .map(|x| x as u8)
-                .collect::<Vec<_>>(),
-        )
-        .map(DynamicImage::ImageRgb8)
-        .ok_or_eyre("Can't decode rgb buffer"),
-        //TODO: handle this
-        PixelFormat::Cmyk => Err(eyre!("unsupported pixel format: CMYK")),
-        PixelFormat::Cmyka => Err(eyre!("unsupported pixel format: CMYKA")),
-    }
+    image::DynamicImage::from_decoder(decoder)
+        .map_err(|why| eyre!("failed to decode jxl image: {why}"))
 }
