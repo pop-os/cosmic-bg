@@ -1,2 +1,2 @@
-app-name = خَلفِيَّةُ كوزمِك
+app-name = خَلفِيَّةُ COSMIC
 translator-credits = zefr0x
