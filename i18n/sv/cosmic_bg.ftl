@@ -1,2 +1,2 @@
-app-name = COSMIC bakgrund
+app-name = COSMIC Bakgrund
 translator-credits = Luna Jernberg
