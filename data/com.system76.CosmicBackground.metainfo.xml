@@ -10,11 +10,13 @@
   <name xml:lang="cs">Pozadí COSMIC</name>
   <name xml:lang="pl">Tapeta COSMIC</name>
   <name xml:lang="ru">Фоны COSMIC</name>
+  <name xml:lang="sv">COSMIC Backgrund</name>
   <summary>COSMIC Background desktop daemon</summary>
   <summary xml:lang="ar">نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ COSMIC</summary>
   <summary xml:lang="cs">Daemon pozadí plochy COSMIC</summary>
   <summary xml:lang="pl">Usługa tapety pulpitu COSMIC</summary>
   <summary xml:lang="ru">Демон фонов оболочки COSMIC</summary>
+  <summary xml:lang="sv">COSMIC bakgrundsprocess för skrivbordsbakgrund</summary>
   <description>
     <p>COSMIC Background desktop daemon</p>
     <p xml:lang="ar">نَاطِرُ خَلفِيَّةِ سَطحِ مَكتَبِ COSMIC</p>
