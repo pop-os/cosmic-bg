@@ -23,6 +23,7 @@
     <p xml:lang="cs">Daemon pozadí plochy COSMIC</p>
     <p xml:lang="pl">Usługa tapety pulpitu COSMIC</p>
     <p xml:lang="ru">Демон фонов оболочки COSMIC</p>
+    <p xml:lang="sv">COSMIC bakgrundsprocess för skrivbordsbakgrund</p>
   </description>
   <!-- <screenshots>
     <screenshot type="default">
