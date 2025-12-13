@@ -95,6 +95,9 @@ pub struct Entry {
     pub scaling_mode: ScalingMode,
     #[serde(default)]
     pub sampling_method: SamplingMethod,
+    /// Animation playback settings for animated wallpapers (GIF, video)
+    #[serde(default)]
+    pub animation_settings: AnimationSettings,
 }
 
 /// A background image which is colored.
@@ -111,13 +114,108 @@ pub struct Gradient {
     pub radius: f32,
 }
 
-/// The source of a background image.
+/// The source of a background image or animation.
+///
+/// # Variants
+///
+/// - `Path`: A static image or animated file (GIF, video). The file extension
+///   determines how it's rendered. Supported: jpg, png, webp, gif, mp4, webm, mkv.
+/// - `Color`: A solid color or gradient background.
+///
+/// # Example (RON format)
+///
+/// ```ron
+/// // Static image
+/// source: Path("/usr/share/backgrounds/cosmic/default.jpg")
+///
+/// // Animated wallpaper (video)
+/// source: Path("/home/user/wallpapers/nature.webm")
+///
+/// // Solid color (RGB values 0.0-1.0)
+/// source: Color(Single([0.1, 0.1, 0.2]))
+/// ```
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub enum Source {
     /// Background image(s) from a path.
+    ///
+    /// If the path points to a directory, images are rotated based on
+    /// `rotation_frequency`. If it points to an animated file (GIF, video),
+    /// it will be rendered as an animated wallpaper.
     Path(PathBuf),
     /// A background color or gradient.
     Color(Color),
+}
+
+/// Settings for animated wallpaper playback (GIF and video files).
+///
+/// These settings control how animated wallpapers are rendered. The defaults
+/// are optimized for smooth playback with minimal resource usage.
+///
+/// # Example Configuration (RON format)
+///
+/// ```ron
+/// animation_settings: (
+///     loop_playback: true,
+///     playback_speed: 1.0,
+///     frame_cache_size: 30,
+/// )
+/// ```
+///
+/// # Hardware Acceleration Notes
+///
+/// For best performance with video wallpapers:
+/// - **NVIDIA**: Any codec works well (H.264, H.265, VP9, AV1)
+/// - **AMD (Mesa)**: Use VP9 or AV1 encoded videos for hardware decode
+/// - **Intel**: Most codecs supported via VAAPI
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct AnimationSettings {
+    /// Whether to loop the animation when it reaches the end.
+    ///
+    /// Default: `true` (continuous looping)
+    #[serde(default = "default_true")]
+    pub loop_playback: bool,
+
+    /// Playback speed multiplier.
+    ///
+    /// - `1.0` = normal speed
+    /// - `0.5` = half speed (slower)
+    /// - `2.0` = double speed (faster)
+    ///
+    /// Default: `1.0`
+    ///
+    /// Note: This setting is currently reserved for future use.
+    #[serde(default = "default_playback_speed")]
+    pub playback_speed: f32,
+
+    /// Maximum number of frames to cache in memory (for GIF animations).
+    ///
+    /// Higher values use more memory but provide smoother playback for
+    /// animations with many frames. Video files stream from disk and
+    /// don't use this cache.
+    ///
+    /// Default: `30` frames
+    #[serde(default = "default_frame_cache_size")]
+    pub frame_cache_size: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_playback_speed() -> f32 {
+    1.0
+}
+
+fn default_frame_cache_size() -> usize {
+    30
+}
+
+impl AnimationSettings {
+    /// Create default animation settings.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl Entry {
@@ -131,6 +229,7 @@ impl Entry {
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
+            animation_settings: AnimationSettings::default(),
         }
     }
 
@@ -146,6 +245,7 @@ impl Entry {
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
+            animation_settings: AnimationSettings::default(),
         }
     }
 }

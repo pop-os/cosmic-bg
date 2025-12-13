@@ -89,6 +89,32 @@ pub fn xrgb21010_canvas(canvas: &mut [u8], image: &DynamicImage) {
 
 /// Draws the image on an 8-bit canvas.
 pub fn xrgb888_canvas(canvas: &mut [u8], image: &DynamicImage) {
+    use rayon::prelude::*;
+
+    // Fast path: if image is RGBA8, we can convert using parallel iteration
+    if let DynamicImage::ImageRgba8(rgba_img) = image {
+        let pixels = rgba_img.as_raw();
+        let pixel_count = pixels.len() / 4;
+
+        // Use parallel iteration for RGBA to BGRX conversion
+        // Split canvas into chunks and process in parallel
+        canvas
+            .par_chunks_mut(4)
+            .take(pixel_count)
+            .enumerate()
+            .for_each(|(i, chunk)| {
+                let s = i * 4;
+                // RGBA to BGRX (little-endian XRGB)
+                chunk[0] = pixels[s + 2]; // B
+                chunk[1] = pixels[s + 1]; // G
+                chunk[2] = pixels[s]; // R
+                chunk[3] = 0xFF; // X (padding)
+            });
+
+        return;
+    }
+
+    // Fallback for other image formats
     for (pos, (_, _, pixel)) in image.pixels().enumerate() {
         let indice = pos * 4;
 

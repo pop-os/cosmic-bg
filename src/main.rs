@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#[cfg(feature = "animated")]
+mod animated;
 mod colored;
+#[cfg(feature = "animated")]
+mod convert;
+#[cfg(feature = "animated")]
+mod dmabuf;
 mod draw;
+#[cfg(feature = "animated")]
+mod frame_queue;
+
 mod img_source;
 mod scaler;
 mod wallpaper;
@@ -32,6 +41,7 @@ mod malloc {
     }
 }
 
+use calloop::signals::{Signal, Signals};
 use cosmic_bg_config::{Config, state::State};
 use cosmic_config::{CosmicConfigEntry, calloop::ConfigWatchSource};
 use eyre::Context;
@@ -72,6 +82,9 @@ use sctk::{
 use tracing::error;
 use tracing_subscriber::prelude::*;
 use wallpaper::Wallpaper;
+
+#[cfg(feature = "animated")]
+use dmabuf::DmaBufState;
 
 #[derive(Debug)]
 pub struct CosmicBgLayer {
@@ -231,6 +244,16 @@ fn main() -> color_eyre::Result<()> {
         wallpapers
     };
 
+    // Initialize DMA-BUF support for zero-copy video rendering
+    #[cfg(feature = "animated")]
+    let mut dmabuf_state = DmaBufState::new();
+    #[cfg(feature = "animated")]
+    {
+        if let Some(dmabuf_global) = DmaBufState::bind_global(&globals, &qh) {
+            dmabuf_state.dmabuf_global = Some(dmabuf_global);
+        }
+    }
+
     let mut bg_state = CosmicBg {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -239,6 +262,8 @@ fn main() -> color_eyre::Result<()> {
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
         viewporter: globals.bind(&qh, 1..=1, ()).unwrap(),
         fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
+        #[cfg(feature = "animated")]
+        dmabuf_state,
         qh,
         source_tx,
         loop_handle: event_loop.handle(),
@@ -246,7 +271,28 @@ fn main() -> color_eyre::Result<()> {
         wallpapers,
         config,
         active_outputs: Vec::new(),
+        cleanup_done: false,
     };
+
+    // Register Unix signal handlers for graceful shutdown
+    // This prevents compositor freezes when cosmic-bg is killed
+    match Signals::new(&[Signal::SIGTERM, Signal::SIGINT]) {
+        Ok(signals) => {
+            if let Err(e) = event_loop
+                .handle()
+                .insert_source(signals, |signal, _, state| {
+                    tracing::info!(?signal, "Received signal, initiating graceful shutdown");
+                    state.graceful_shutdown();
+                    state.exit = true;
+                })
+            {
+                tracing::warn!("Failed to register signal handler: {e}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to create signal source: {e}");
+        }
+    }
 
     loop {
         event_loop.dispatch(None, &mut bg_state)?;
@@ -255,6 +301,10 @@ fn main() -> color_eyre::Result<()> {
             break;
         }
     }
+
+    // Ensure cleanup happens even on normal exit
+    tracing::info!("Event loop exited, performing final cleanup");
+    bg_state.graceful_shutdown();
 
     Ok(())
 }
@@ -268,6 +318,8 @@ pub struct CosmicBg {
     layer_state: LayerShell,
     viewporter: wp_viewporter::WpViewporter,
     fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    #[cfg(feature = "animated")]
+    dmabuf_state: DmaBufState,
     qh: QueueHandle<CosmicBg>,
     source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
@@ -275,9 +327,49 @@ pub struct CosmicBg {
     wallpapers: Vec<Wallpaper>,
     config: Config,
     active_outputs: Vec<WlOutput>,
+    /// Flag to track if cleanup has been performed
+    cleanup_done: bool,
+}
+
+impl Drop for CosmicBg {
+    fn drop(&mut self) {
+        if !self.cleanup_done {
+            tracing::info!("Drop: performing cleanup");
+            self.graceful_shutdown();
+        }
+    }
 }
 
 impl CosmicBg {
+    /// Gracefully shutdown all resources to prevent compositor freezes.
+    ///
+    /// This is called when receiving SIGTERM/SIGINT or on normal exit.
+    /// It ensures GStreamer pipelines are stopped and DMA-BUF resources
+    /// are released before the process terminates.
+    fn graceful_shutdown(&mut self) {
+        if self.cleanup_done {
+            return;
+        }
+        self.cleanup_done = true;
+
+        tracing::info!("Graceful shutdown: stopping all wallpapers");
+
+        // Stop all animated wallpapers (GStreamer pipelines)
+        // Use non-blocking stop to avoid hangs
+        for wallpaper in &mut self.wallpapers {
+            wallpaper.stop_animation();
+        }
+
+        // Clear wallpapers to drop layer surfaces and release buffers
+        self.wallpapers.clear();
+
+        // Small delay to let compositor process surface destruction
+        // Keep it short to avoid perceived freeze
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        tracing::info!("Graceful shutdown complete");
+    }
+
     fn apply_backgrounds(&mut self) {
         self.wallpapers.clear();
 
@@ -603,6 +695,16 @@ delegate_registry!(CosmicBg);
 delegate_noop!(CosmicBg: wp_viewporter::WpViewporter);
 delegate_noop!(CosmicBg: wp_viewport::WpViewport);
 delegate_noop!(CosmicBg: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+// DMA-BUF protocol delegates
+#[cfg(feature = "animated")]
+delegate_noop!(CosmicBg: ignore wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
+#[cfg(feature = "animated")]
+delegate_noop!(CosmicBg: ignore wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
+#[cfg(feature = "animated")]
+use sctk::reexports::client::protocol::wl_buffer;
+#[cfg(feature = "animated")]
+delegate_noop!(CosmicBg: ignore wl_buffer::WlBuffer);
 
 impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSurface>>
     for CosmicBg
