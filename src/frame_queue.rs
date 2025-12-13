@@ -529,13 +529,14 @@ impl FrameQueue {
     }
 
     /// Check if the queue has been stopped.
-    #[cfg(test)]
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
 
-    /// Stop the queue (called on EOS or error).
-    #[cfg(test)]
+    /// Stop the queue (called on shutdown or error).
+    ///
+    /// This prevents new frames from being pushed and signals
+    /// that the queue is no longer active.
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
     }

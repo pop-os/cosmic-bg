@@ -673,6 +673,11 @@ impl VideoPlayer {
         frame_queue: &crate::frame_queue::SharedFrameQueue,
         frame_state: &Arc<Mutex<VideoFrameState>>,
     ) -> Result<gstreamer::FlowSuccess, gstreamer::FlowError> {
+        // Check if we're shutting down - return early to avoid blocking
+        if frame_queue.is_stopped() {
+            return Err(gstreamer::FlowError::Eos);
+        }
+
         let sample = match appsink.pull_sample() {
             Ok(s) => s,
             Err(e) => {
@@ -933,9 +938,26 @@ impl VideoPlayer {
     }
 
     /// Stop video playback.
+    ///
+    /// This performs a non-blocking stop to avoid system freezes when
+    /// CUDA/GPU operations are in progress. The state change is initiated
+    /// but not waited on synchronously.
     pub fn stop(&self) -> eyre::Result<()> {
         use gstreamer::prelude::*;
+
+        // Stop accepting new frames first
+        self.frame_queue.stop();
+
+        // Set EOS flag to stop any pending callbacks
+        if let Ok(mut state) = self.frame_state.lock() {
+            state.eos = true;
+        }
+
+        // Set state to NULL without waiting - avoids blocking on GPU operations
+        // The pipeline will clean up asynchronously
         let _ = self.pipeline.set_state(gstreamer::State::Null);
+
+        tracing::debug!(path = ?self.source_path, "Video pipeline stopped");
         Ok(())
     }
 
@@ -1110,8 +1132,18 @@ impl VideoPlayer {
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
-        if let Err(e) = self.stop() {
-            error!(?e, "Failed to stop video pipeline on drop");
+        // Stop frame queue first to signal callbacks to exit
+        self.frame_queue.stop();
+
+        // Set EOS flag
+        if let Ok(mut state) = self.frame_state.try_lock() {
+            state.eos = true;
         }
+
+        // Set pipeline to NULL state - this is non-blocking
+        use gstreamer::prelude::*;
+        let _ = self.pipeline.set_state(gstreamer::State::Null);
+
+        tracing::debug!(path = ?self.source_path, "VideoPlayer dropped");
     }
 }
