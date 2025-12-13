@@ -41,30 +41,18 @@ The `animated` feature (enabled by default) adds support for animated wallpapers
 - **Recommendation**: Use **VP9 or AV1** encoded videos for best AMD compatibility
 
 #### Software Fallback
-If no hardware decoder is available, the system falls back to software decoding via FFmpeg/libav. This works for all codecs but uses more CPU.
+If no hardware decoder is available, the system falls back to software decoding via GStreamer's `decodebin`. For H.264 content on systems without hardware decode (e.g., AMD on Fedora), install `openh264` for software decode support.
 
-### Automatic Format Conversion
+### Codec Detection
 
-To ensure optimal hardware decode performance across all GPU vendors, `cosmic-bg` can automatically convert incompatible video formats to VP9/WebM:
+At startup, `cosmic-bg` automatically detects available hardware decoders and selects the best pipeline:
 
-| Input Format | NVIDIA Action | AMD/Intel Action |
-|--------------|---------------|------------------|
-| VP9/WebM     | Play directly | Play directly    |
-| AV1          | Play directly | Play directly    |
-| H.264/MP4    | Play directly | Convert to VP9   |
-| H.265/HEVC   | Play directly | Convert to VP9   |
-| MPEG4/AVI    | Convert to VP9| Convert to VP9   |
-| GIF          | Play directly | Play directly    |
+1. **Probes GStreamer registry** for NVIDIA (NVDEC) and AMD/Intel (VAAPI) decoders
+2. **Tests decoder functionality** - demotes non-functional decoders (e.g., NVDEC when CUDA unavailable)
+3. **Selects optimal pipeline** based on container format and available decoders
+4. **Falls back gracefully** to software decode if no hardware path available
 
-**How it works:**
-- On first use, incompatible formats are converted to VP9/WebM using FFmpeg
-- Converted files are cached in `~/.local/share/cosmic-bg/converted/`
-- Subsequent runs use the cached file (instant startup)
-- Falls back gracefully to direct playback if conversion fails
-
-**Requirements:**
-- FFmpeg must be installed for conversion (`ffmpeg` command available in PATH)
-- Note: Some distributions (e.g., Fedora) have limited H.264/H.265 decoder support due to patent restrictions
+This ensures videos play correctly regardless of GPU vendor or codec availability.
 
 ### Performance
 
