@@ -686,7 +686,7 @@ impl VideoPlayer {
             state.frame_count += 1;
             if state.frame_count % 60 == 0 {
                 let stats = frame_queue.stats();
-                tracing::info!(
+                tracing::debug!(
                     frames = state.frame_count,
                     queue_len = frame_queue.len(),
                     pushed = stats.frames_pushed,
@@ -954,7 +954,7 @@ impl VideoPlayer {
         let frame = self.frame_queue.get_render_frame()?;
         let dmabuf_data = frame.dmabuf()?;
 
-        tracing::info!(
+        tracing::trace!(
             width = frame.width,
             height = frame.height,
             fourcc = format!("{:#x}", dmabuf_data.fourcc),
