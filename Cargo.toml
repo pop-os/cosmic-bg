@@ -26,7 +26,7 @@ fast_image_resize = { version = "5.1.4", features = ["image"] }
 # GStreamer for hardware-accelerated video decoding (VAAPI, NVDEC, etc.)
 gstreamer = { version = "0.24", optional = true }
 gstreamer-allocators = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true, features = ["v1_24"] }
 gstreamer-video = { version = "0.24", optional = true }
 image = { workspace = true, features = ["hdr", "jpeg", "png", "rayon", "webp"] }
 jxl-oxide = { version = "0.12.4", features = ["image"] }
@@ -38,7 +38,7 @@ tracing = { workspace = true }
 tracing-subscriber = "0.3.20"
 walkdir = "2.5"
 # Wayland protocols for DMA-BUF support
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
 
 [workspace]
 members = ["config"]

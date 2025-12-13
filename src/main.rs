@@ -4,8 +4,6 @@
 mod animated;
 mod colored;
 #[cfg(feature = "animated")]
-mod convert;
-#[cfg(feature = "animated")]
 mod dmabuf;
 mod draw;
 #[cfg(feature = "animated")]

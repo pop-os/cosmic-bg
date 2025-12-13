@@ -75,42 +75,16 @@ pub struct VideoPlayer {
 impl VideoPlayer {
     /// Log available hardware video decoders for debugging.
     fn log_available_decoders() {
-        use gstreamer::prelude::*;
+        // Use the detection module which caches the result
+        let support = super::get_codec_support();
 
-        let registry = gstreamer::Registry::get();
-
-        let hw_decoders = [
-            ("cudadmabufupload", "CUDA→DMA-BUF (NVIDIA zero-copy)"),
-            ("nvh264dec", "NVDEC H.264 (NVIDIA)"),
-            ("nvh265dec", "NVDEC H.265/HEVC (NVIDIA)"),
-            ("nvvp9dec", "NVDEC VP9 (NVIDIA)"),
-            ("nvav1dec", "NVDEC AV1 (NVIDIA)"),
-            ("vaapih264dec", "VAAPI H.264 (AMD/Intel)"),
-            ("vaapih265dec", "VAAPI H.265/HEVC (AMD/Intel)"),
-            ("vaapivp9dec", "VAAPI VP9 (AMD/Intel)"),
-            ("vaapiav1dec", "VAAPI AV1 (AMD/Intel)"),
-            ("vaapipostproc", "VAAPI Post-Processing (AMD/Intel)"),
-            ("v4l2h264dec", "V4L2 H.264 (ARM)"),
-            ("v4l2h265dec", "V4L2 H.265/HEVC (ARM)"),
-        ];
-
-        let mut available = Vec::new();
-        for (element_name, description) in hw_decoders {
-            if registry
-                .find_feature(element_name, gstreamer::ElementFactory::static_type())
-                .is_some()
-            {
-                available.push(description);
-            }
-        }
-
-        if available.is_empty() {
+        if support.hw_decoders.is_empty() {
             warn!(
                 "No hardware video decoders found. Video will use software decoding. \
                  Install gstreamer1-vaapi (AMD/Intel) or gstreamer1-plugins-bad (NVIDIA) for hardware acceleration."
             );
         } else {
-            info!(decoders = ?available, "Available hardware video decoders");
+            info!(decoders = ?support.hw_decoders, "Available hardware video decoders");
         }
     }
 
@@ -119,6 +93,10 @@ impl VideoPlayer {
         use gstreamer::prelude::*;
 
         gstreamer::init()?;
+
+        // Demote NVIDIA decoders if they can't actually be instantiated
+        // (e.g., on AMD-only systems where CUDA isn't available)
+        super::demote_broken_nvidia_decoders();
 
         static LOGGED_DECODERS: std::sync::Once = std::sync::Once::new();
         LOGGED_DECODERS.call_once(Self::log_available_decoders);
@@ -177,6 +155,7 @@ impl VideoPlayer {
         )
         .or_else(|| {
             Self::try_vaapi_dmabuf_pipeline(
+                path,
                 &escaped_path,
                 has_vaapi,
                 _try_dmabuf,
@@ -222,19 +201,28 @@ impl VideoPlayer {
             .downcast::<gstreamer_app::AppSink>()
             .map_err(|_| eyre::eyre!("Element 'sink' is not an AppSink"))?;
 
-        let initial_frame_duration =
-            Self::detect_framerate(&pipeline, &appsink, target_width, target_height);
-
         let frame_state = Arc::new(Mutex::new(VideoFrameState {
             current_frame: None,
-            frame_duration: initial_frame_duration,
+            frame_duration: DEFAULT_FRAME_DURATION,
             eos: false,
             frame_count: 0,
         }));
 
         let frame_queue = crate::frame_queue::new_shared_queue(3);
 
+        // IMPORTANT: Set up callbacks BEFORE detect_framerate sets pipeline to PAUSED
+        // This ensures our propose_allocation callback (which adds VideoMeta support)
+        // is active when caps negotiation happens for VAAPI DMA-BUF
         Self::setup_appsink_callback(&appsink, Arc::clone(&frame_queue), Arc::clone(&frame_state));
+
+        // Now detect framerate - this sets pipeline to PAUSED and triggers caps negotiation
+        let initial_frame_duration =
+            Self::detect_framerate(&pipeline, &appsink, target_width, target_height);
+
+        // Update frame_state with detected duration
+        if let Ok(mut state) = frame_state.lock() {
+            state.frame_duration = initial_frame_duration;
+        }
 
         Ok(Self {
             pipeline,
@@ -333,10 +321,11 @@ impl VideoPlayer {
     }
 
     fn try_vaapi_dmabuf_pipeline(
+        path: &Path,
         escaped_path: &str,
         has_vaapi: bool,
         try_dmabuf: bool,
-        test_pipeline: &impl Fn(&str) -> bool,
+        _test_pipeline: &impl Fn(&str) -> bool,
         target_width: u32,
         target_height: u32,
     ) -> Option<String> {
@@ -344,30 +333,66 @@ impl VideoPlayer {
             return None;
         }
 
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        // Check which VAAPI decoders are available
+        let has_vaapi_h264 = gstreamer::ElementFactory::find("vaapih264dec").is_some()
+            || gstreamer::ElementFactory::find("vah264dec").is_some();
+        let has_vaapi_h265 = gstreamer::ElementFactory::find("vaapih265dec").is_some()
+            || gstreamer::ElementFactory::find("vah265dec").is_some();
+        let has_vaapi_vp9 = gstreamer::ElementFactory::find("vaapivp9dec").is_some()
+            || gstreamer::ElementFactory::find("vavp9dec").is_some();
+        let has_vaapi_av1 = gstreamer::ElementFactory::find("vaapiav1dec").is_some()
+            || gstreamer::ElementFactory::find("vaav1dec").is_some();
+
+        // Only use VAAPI pipeline if we have the appropriate decoder
+        // MP4/MOV typically contain H.264/H.265, WebM contains VP8/VP9/AV1
+        let can_use_vaapi = match ext.as_str() {
+            "webm" => has_vaapi_vp9 || has_vaapi_av1,
+            "mp4" | "m4v" | "mov" => has_vaapi_h264 || has_vaapi_h265,
+            "mkv" => has_vaapi_h264 || has_vaapi_h265 || has_vaapi_vp9 || has_vaapi_av1,
+            _ => false,
+        };
+
+        if !can_use_vaapi {
+            debug!(
+                ext = %ext,
+                has_vaapi_h264,
+                has_vaapi_vp9,
+                "Skipping VAAPI pipeline - no decoder for container format"
+            );
+            return None;
+        }
+
+        // For VAAPI DMA-BUF, we DON'T test the pipeline because the test uses
+        // a temporary appsink without our VideoMeta callback. Instead, we return
+        // the pipeline string and let the real appsink (with propose_allocation
+        // callback) handle the negotiation.
+        //
+        // Using format=DMA_DRM tells GStreamer to negotiate DRM format codes.
+        // The pipeline will be: decode → vapostproc → DMA-BUF → appsink
         let pipeline = format!(
             concat!(
                 "filesrc location=\"{path}\" ! ",
-                "decodebin name=dec ! ",
-                "videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! ",
+                "decodebin ! ",
                 "vapostproc ! ",
-                "video/x-raw(memory:DMABuf),format=BGRx ! ",
+                "video/x-raw(memory:DMABuf),format=DMA_DRM ! ",
                 "appsink name=sink sync=true max-buffers=4 drop=true"
             ),
             path = escaped_path,
         );
 
-        debug!(pipeline = %pipeline, "Trying VAAPI DMA-BUF zero-copy pipeline");
+        info!(
+            "Attempting VAAPI DMA-BUF zero-copy pipeline ({}x{})",
+            target_width, target_height
+        );
+        debug!(pipeline = %pipeline, "VAAPI DMA-BUF pipeline");
 
-        if test_pipeline(&pipeline) {
-            info!(
-                "VAAPI DMA-BUF zero-copy pipeline active ({}x{})",
-                target_width, target_height
-            );
-            Some(pipeline)
-        } else {
-            debug!("VAAPI DMA-BUF pipeline failed");
-            None
-        }
+        Some(pipeline)
     }
 
     fn try_nvdec_gl_dmabuf_pipeline(
@@ -514,19 +539,40 @@ impl VideoPlayer {
         target_width: u32,
         target_height: u32,
     ) -> String {
-        let pipeline = format!(
-            concat!(
-                "filesrc location=\"{path}\" ! ",
-                "decodebin ! ",
-                "videoconvert ! ",
-                "video/x-raw,format=BGRx ! ",
-                "appsink name=sink sync=true max-buffers=4 drop=true"
-            ),
-            path = escaped_path,
-        );
+        // Check if openh264dec is available for explicit H.264 software decode
+        let has_openh264 = gstreamer::ElementFactory::find("openh264dec").is_some();
+
+        // For software fallback, we want to avoid hardware decoders that might
+        // be registered but not functional (e.g., nvh264dec on AMD-only systems).
+        // If openh264 is available, prefer that for H.264 content.
+        let pipeline = if has_openh264 {
+            // Use decodebin3 which has better fallback behavior, with decoder hints
+            format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "decodebin3 ! ",
+                    "videoconvert ! ",
+                    "video/x-raw,format=BGRx ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            )
+        } else {
+            format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "decodebin ! ",
+                    "videoconvert ! ",
+                    "video/x-raw,format=BGRx ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            )
+        };
 
         debug!(
             pipeline = %pipeline,
+            has_openh264,
             "Using software decodebin fallback ({}x{})",
             target_width, target_height
         );
@@ -611,6 +657,13 @@ impl VideoPlayer {
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| Self::handle_sample(appsink, &frame_queue, &frame_state))
+                .propose_allocation(|_appsink, query| {
+                    // Add VideoMeta support to enable DMA-BUF output from VAAPI.
+                    // vapostproc requires downstream to support VideoMeta for DMA-BUF caps.
+                    query.add_allocation_meta::<gstreamer_video::VideoMeta>(None);
+                    debug!("Added VideoMeta to allocation query for DMA-BUF support");
+                    true
+                })
                 .build(),
         );
     }
@@ -1014,11 +1067,25 @@ impl VideoPlayer {
                     return true;
                 }
                 MessageView::Error(err) => {
-                    error!(
-                        src = ?err.src().map(|s| s.path_string()),
-                        error = %err.error(),
-                        "GStreamer pipeline error"
-                    );
+                    let error_msg = err.error().to_string();
+                    let src_path = err.src().map(|s| s.path_string());
+
+                    // Provide helpful error messages for common codec issues
+                    if error_msg.contains("missing a plug-in") {
+                        error!(
+                            src = ?src_path,
+                            error = %error_msg,
+                            "GStreamer pipeline error: Missing codec plugin. \
+                             For H.264/MP4 support on Fedora, install 'gstreamer1-plugin-openh264' or use VP9/WebM files. \
+                             Alternatively, enable RPM Fusion and install 'gstreamer1-plugins-ugly'."
+                        );
+                    } else {
+                        error!(
+                            src = ?src_path,
+                            error = %error_msg,
+                            "GStreamer pipeline error"
+                        );
+                    }
                     return true;
                 }
                 MessageView::Warning(warn) => {

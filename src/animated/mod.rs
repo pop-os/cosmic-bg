@@ -43,7 +43,7 @@ mod types;
 mod video_player;
 
 // Re-export public API
-pub use detection::{is_animated_file, is_video_file};
+pub use detection::{demote_broken_nvidia_decoders, get_codec_support, is_animated_file};
 pub use player::AnimatedPlayer;
 pub use types::AnimatedSource;
 

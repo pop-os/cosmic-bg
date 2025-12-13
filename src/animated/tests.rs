@@ -53,10 +53,10 @@ mod tests {
 
     #[test]
     fn test_animated_extensions() {
-        use super::super::detection::ANIMATED_EXTENSIONS;
+        // All known animated extensions should be recognized
+        let animated_extensions = ["gif", "mp4", "webm", "mkv", "avi", "mov", "m4v", "ogv"];
 
-        // All animated extensions should be recognized
-        for ext in ANIMATED_EXTENSIONS {
+        for ext in animated_extensions {
             let filename = format!("test.{ext}");
             assert!(
                 is_animated_file(Path::new(&filename)),

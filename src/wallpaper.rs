@@ -846,30 +846,14 @@ impl Wallpaper {
     /// For video files, the video is scaled during decode to match the largest
     /// output resolution. This is more efficient than scaling during render.
     ///
-    /// If the video format is not optimal for the current GPU, it will be
-    /// automatically converted to VP9/WebM for better hardware decode support.
+    /// Hardware decode is used automatically via GStreamer's decodebin which
+    /// selects the best available decoder (VAAPI, NVDEC, or software fallback).
     #[cfg(feature = "animated")]
     pub fn init_animation(&mut self, path: &std::path::Path) -> bool {
-        use crate::animated::{AnimatedSource, is_video_file};
-        use crate::convert::get_optimal_video_path;
+        use crate::animated::AnimatedSource;
 
-        // For video files, check if format conversion is needed for optimal playback
-        let playback_path = if is_video_file(path) {
-            let optimal = get_optimal_video_path(path);
-            if optimal != path {
-                tracing::info!(
-                    original = %path.display(),
-                    converted = %optimal.display(),
-                    "Using converted video for optimal hardware decode"
-                );
-            }
-            optimal
-        } else {
-            path.to_path_buf()
-        };
-
-        let Some(source) = AnimatedSource::from_path(&playback_path) else {
-            tracing::warn!(path = %playback_path.display(), "Not an animated file");
+        let Some(source) = AnimatedSource::from_path(path) else {
+            tracing::warn!(path = %path.display(), "Not an animated file");
             return false;
         };
 
@@ -887,7 +871,7 @@ impl Wallpaper {
             .unwrap_or((1920, 1080)); // Default to 1080p if no layers yet
 
         tracing::debug!(
-            path = %playback_path.display(),
+            path = %path.display(),
             target_width,
             target_height,
             "Initializing animated wallpaper (appsink mode)"
@@ -895,13 +879,13 @@ impl Wallpaper {
 
         match AnimatedPlayer::new(source, target_width, target_height) {
             Ok(player) => {
-                tracing::debug!(path = %playback_path.display(), "Initialized animated wallpaper");
+                tracing::debug!(path = %path.display(), "Initialized animated wallpaper");
                 self.animation_state = Some(AnimationState::new(player));
                 self.register_frame_timer();
                 true
             }
             Err(e) => {
-                tracing::error!(?e, path = %playback_path.display(), "Failed to initialize animated wallpaper");
+                tracing::error!(?e, path = %path.display(), "Failed to initialize animated wallpaper");
                 false
             }
         }
