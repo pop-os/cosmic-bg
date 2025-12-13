@@ -25,6 +25,7 @@ pub struct AnimatedFrame {
     /// How long this frame should be displayed.
     pub duration: Duration,
     /// Presentation timestamp (nanoseconds). Used for synchronization and debugging.
+    #[allow(dead_code)]
     pub pts: Option<u64>,
 }
 

@@ -125,12 +125,22 @@ impl AnimatedPlayer {
                 }
             }
 
+            // GIF delay is in centiseconds (1/100th of a second)
+            // delay=0 means "as fast as possible" - we use 10cs (100ms) as a reasonable default
+            // delay=2 means 20ms, delay=10 means 100ms, etc.
             let delay = if gif_frame.delay == 0 {
-                100
+                10 // 100ms default for unspecified delay
             } else {
                 gif_frame.delay as u64
             };
             let duration = Duration::from_millis(delay * 10).max(MIN_FRAME_DURATION);
+
+            tracing::debug!(
+                frame = frames.len(),
+                delay_cs = gif_frame.delay,
+                duration_ms = duration.as_millis(),
+                "GIF frame loaded"
+            );
 
             frames.push(AnimatedFrame {
                 image: DynamicImage::ImageRgba8(canvas.clone()),
@@ -185,7 +195,8 @@ impl AnimatedPlayer {
 
     /// Advance to the next frame (for GIF playback).
     ///
-    /// Returns `true` if the animation should continue (did not loop).
+    /// Returns `true` if the animation should continue, `false` to stop.
+    /// GIFs always loop, so they always return `true` (unless empty).
     pub fn advance(&mut self) -> bool {
         match &mut self.source {
             PlayerSource::Gif(frames) => {
@@ -193,8 +204,8 @@ impl AnimatedPlayer {
                     return false;
                 }
                 self.current_index = (self.current_index + 1) % frames.len();
-                // Return true if we did NOT wrap (continue normally)
-                self.current_index != 0
+                // GIFs always loop - always return true
+                true
             }
             PlayerSource::Video(player) => {
                 // Check for EOS and handle looping

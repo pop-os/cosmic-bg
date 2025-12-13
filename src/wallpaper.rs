@@ -23,9 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cosmic_bg_config::{
-    Color, Entry, FilterMethod, SamplingMethod, ScalingMode, Source, state::State,
-};
+use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
 use cosmic_config::CosmicConfigEntry;
 use eyre::eyre;
 use image::{DynamicImage, ImageReader};
@@ -135,28 +133,6 @@ fn calculate_viewport(
     }
 }
 
-/// Scale an image according to the specified scaling mode.
-#[cfg(feature = "animated")]
-fn scale_image(
-    image: &DynamicImage,
-    width: u32,
-    height: u32,
-    scaling_mode: &ScalingMode,
-    filter_method: &FilterMethod,
-) -> DynamicImage {
-    let (src_w, src_h) = (image.width(), image.height());
-
-    if src_w == width && src_h == height {
-        return image.clone();
-    }
-
-    match scaling_mode {
-        ScalingMode::Fit(color) => crate::scaler::fit(image, color, width, height, filter_method),
-        ScalingMode::Zoom => crate::scaler::zoom(image, width, height, filter_method),
-        ScalingMode::Stretch => crate::scaler::stretch(image, width, height, filter_method),
-    }
-}
-
 /// Animation playback state
 #[cfg(feature = "animated")]
 #[derive(Debug)]
@@ -165,9 +141,6 @@ pub struct AnimationState {
     pub player: AnimatedPlayer,
     /// Timer token for frame advancement
     pub frame_timer_token: Option<RegistrationToken>,
-    /// Cached scaled frames for each output resolution
-    /// Key: (frame_index, width, height), Value: scaled frame
-    pub scaled_frame_cache: std::collections::HashMap<(usize, u32, u32), DynamicImage>,
     /// Last rendered frame index (to detect frame changes)
     pub last_frame_index: usize,
 }
@@ -178,17 +151,8 @@ impl AnimationState {
         Self {
             player,
             frame_timer_token: None,
-            scaled_frame_cache: std::collections::HashMap::new(),
             last_frame_index: usize::MAX,
         }
-    }
-
-    /// Clear old cached frames, keeping only the current and next few frames
-    pub fn cleanup_cache(&mut self, current_frame: usize) {
-        self.scaled_frame_cache.retain(|(frame_idx, _, _), _| {
-            // Keep current frame and a few ahead
-            *frame_idx >= current_frame && *frame_idx < current_frame + 3
-        });
     }
 }
 
@@ -442,9 +406,8 @@ impl Wallpaper {
 
         let current_frame_idx = anim_state.player.current_frame_index();
 
-        // Cleanup old cached frames if frame changed
-        if is_video || anim_state.last_frame_index != current_frame_idx {
-            anim_state.cleanup_cache(current_frame_idx);
+        // Track frame changes for logging
+        if anim_state.last_frame_index != current_frame_idx {
             anim_state.last_frame_index = current_frame_idx;
         }
 
@@ -455,12 +418,18 @@ impl Wallpaper {
             return;
         }
 
-        // GIF: CPU scaling with caching
+        // GIF: viewport scaling (GPU-accelerated)
         self.draw_gif_frame(&mut anim_state, current_frame_idx, start);
         self.animation_state = Some(anim_state);
     }
 
-    /// Draw a GIF frame with CPU scaling and per-resolution caching.
+    /// Draw a GIF frame using viewport scaling (GPU-accelerated).
+    ///
+    /// Similar to video rendering:
+    /// 1. Write native-resolution GIF frame to wl_shm buffer (small, fast)
+    /// 2. Use wp_viewport to GPU-scale to screen resolution
+    ///
+    /// This is much faster than CPU scaling each frame.
     #[cfg(feature = "animated")]
     fn draw_gif_frame(
         &mut self,
@@ -468,91 +437,103 @@ impl Wallpaper {
         current_frame_idx: usize,
         start: Instant,
     ) {
-        // Capture scaling config before the loop to avoid borrow conflicts
-        let scaling_mode = self.entry.scaling_mode.clone();
-        let filter_method = self.entry.filter_method.clone();
+        use sctk::reexports::client::protocol::wl_shm;
+        use sctk::shell::WaylandSurface;
 
-        for layer in self.layers.iter_mut().filter(|layer| layer.needs_redraw) {
-            let Some(pool) = layer.pool.as_mut() else {
-                continue;
-            };
+        // Get current frame from player
+        let gif_frame = match anim_state.player.current_frame() {
+            Some(f) => f,
+            None => return,
+        };
 
-            let Some(fractional_scale) = layer.fractional_scale else {
-                continue;
-            };
+        let frame_width = gif_frame.image.width();
+        let frame_height = gif_frame.image.height();
 
-            let Some((width, height)) = layer.size else {
-                continue;
-            };
+        // Find layers that need redraw and have pools
+        let layers_needing_redraw: Vec<usize> = self
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| {
+                layer.needs_redraw
+                    && layer.pool.is_some()
+                    && layer.fractional_scale.is_some()
+                    && layer.size.is_some()
+            })
+            .map(|(i, _)| i)
+            .collect();
 
-            let width = width * fractional_scale / 120;
-            let height = height * fractional_scale / 120;
-            let cache_key = (current_frame_idx, width, height);
+        if layers_needing_redraw.is_empty() {
+            return;
+        }
 
-            // Try to use cached scaled frame
-            let scaled_img = if let Some(cached) = anim_state.scaled_frame_cache.get(&cache_key) {
-                cached.clone()
-            } else {
-                // Get current frame from player
-                let gif_frame = match anim_state.player.current_frame() {
-                    Some(f) => f,
-                    None => continue,
-                };
+        // Create buffer at native GIF resolution (not screen resolution)
+        let first_idx = layers_needing_redraw[0];
+        let pool = self.layers[first_idx].pool.as_mut().unwrap();
 
-                tracing::trace!(
-                    pts = ?gif_frame.pts,
-                    duration_ms = gif_frame.duration.as_millis(),
-                    "Rendering GIF frame"
-                );
+        let buffer_result = pool.create_buffer(
+            frame_width as i32,
+            frame_height as i32,
+            frame_width as i32 * 4,
+            wl_shm::Format::Xrgb8888,
+        );
 
-                // Scale and cache
-                let scaled = scale_image(
-                    &gif_frame.image,
-                    width,
-                    height,
-                    &scaling_mode,
-                    &filter_method,
-                );
-                anim_state
-                    .scaled_frame_cache
-                    .insert(cache_key, scaled.clone());
-                scaled
-            };
+        let (buffer, canvas) = match buffer_result {
+            Ok(b) => b,
+            Err(why) => {
+                tracing::error!(?why, "Failed to create GIF buffer");
+                return;
+            }
+        };
 
-            // Draw to wl_shm buffer
-            let draw_start = Instant::now();
-            let buffer_result = crate::draw::canvas(
-                pool,
-                &scaled_img,
-                width as i32,
-                height as i32,
-                width as i32 * 4,
+        // Write native-resolution frame to buffer (fast - small buffer)
+        crate::draw::xrgb888_canvas(canvas, &gif_frame.image);
+
+        let wl_buffer = buffer.wl_buffer();
+
+        // Attach to all surfaces with viewport scaling
+        for &layer_idx in &layers_needing_redraw {
+            let layer = &mut self.layers[layer_idx];
+            let (logical_width, logical_height) = layer.size.unwrap();
+
+            let wl_surface = layer.layer.wl_surface();
+
+            // Damage the buffer
+            wl_surface.damage_buffer(0, 0, frame_width as i32, frame_height as i32);
+
+            // Request next frame callback
+            layer
+                .layer
+                .wl_surface()
+                .frame(&self.queue_handle, wl_surface.clone());
+
+            // Attach the buffer
+            wl_surface.attach(Some(wl_buffer), 0, 0);
+
+            // Calculate viewport for GPU scaling
+            let (src_x, src_y, src_w, src_h, dst_w, dst_h) = calculate_viewport(
+                frame_width,
+                frame_height,
+                logical_width,
+                logical_height,
+                &self.entry.scaling_mode,
             );
 
-            match buffer_result {
-                Ok(buffer) => {
-                    crate::draw::layer_surface(
-                        layer,
-                        &self.queue_handle,
-                        &buffer,
-                        (width as i32, height as i32),
-                    );
-                    layer.needs_redraw = false;
+            // Set viewport source and destination for GPU scaling
+            layer.viewport.set_source(src_x, src_y, src_w, src_h);
+            layer.viewport.set_destination(dst_w as i32, dst_h as i32);
 
-                    tracing::debug!(
-                        frame = current_frame_idx,
-                        draw_time = ?draw_start.elapsed(),
-                        total = ?start.elapsed(),
-                        %width,
-                        %height,
-                        "GIF frame drawn"
-                    );
-                }
-                Err(why) => {
-                    tracing::error!(?why, "GIF frame could not be drawn");
-                }
-            }
+            wl_surface.commit();
+            layer.needs_redraw = false;
         }
+
+        tracing::debug!(
+            frame = current_frame_idx,
+            src_w = frame_width,
+            src_h = frame_height,
+            total = ?start.elapsed(),
+            "GIF frame drawn (viewport scaling)"
+        );
     }
 
     /// Draw a video frame using viewport scaling with SHARED BUFFER and ZERO-COPY.
@@ -1024,11 +1005,27 @@ impl Wallpaper {
                         wallpaper.draw_animated_frame(timer_start);
                     }
 
-                    let total_time = timer_start.elapsed();
-                    tracing::debug!(?total_time, dmabuf = dmabuf_rendered, "Frame timer tick");
+                    let render_time = timer_start.elapsed();
 
-                    // Schedule next frame
-                    TimeoutAction::ToDuration(next_duration)
+                    // Compensate for render time: schedule next frame sooner
+                    // to maintain correct animation speed
+                    let adjusted_duration = next_duration.saturating_sub(render_time);
+                    let adjusted_duration = adjusted_duration.max(Duration::from_millis(1));
+
+                    tracing::debug!(
+                        render_time_ms = render_time.as_millis(),
+                        frame_duration_ms = next_duration.as_millis(),
+                        adjusted_ms = adjusted_duration.as_millis(),
+                        frame_idx = wallpaper
+                            .animation_state
+                            .as_ref()
+                            .map(|a| a.player.current_frame_index())
+                            .unwrap_or(999),
+                        "Frame timer tick"
+                    );
+
+                    // Schedule next frame with adjusted duration
+                    TimeoutAction::ToDuration(adjusted_duration)
                 },
             )
             .ok();
