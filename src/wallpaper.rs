@@ -48,6 +48,7 @@ use walkdir::WalkDir;
 /// Returns: (src_x, src_y, src_width, src_height, dst_width, dst_height)
 /// - Source coordinates are in buffer pixel coordinates
 /// - Destination sizes are in logical surface coordinates
+#[cfg(feature = "animated")]
 fn calculate_viewport(
     buffer_width: u32,
     buffer_height: u32,
