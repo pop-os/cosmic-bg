@@ -167,6 +167,9 @@ pub enum Source {
 /// - **NVIDIA**: Any codec works well (H.264, H.265, VP9, AV1)
 /// - **AMD (Mesa)**: Use VP9 or AV1 encoded videos for hardware decode
 /// - **Intel**: Most codecs supported via VAAPI
+///
+/// TODO: These settings are not yet implemented. Videos always loop unconditionally.
+/// Future work: wire these settings into the video player.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct AnimationSettings {
     /// Whether to loop the animation when it reaches the end.
