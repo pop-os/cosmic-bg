@@ -1022,10 +1022,12 @@ impl VideoPlayer {
     }
 
     /// Try to get a DMA-BUF frame for zero-copy rendering.
+    /// 
+    /// NOTE: This shares the file descriptor references from the frame queue.
+    /// The returned DmaBufBuffer shares Arc<OwnedFd> with the queued frame,
+    /// avoiding FD duplication on every render (which would cause FD leaks).
     #[must_use]
     pub fn try_get_dmabuf_frame(&self) -> Option<crate::dmabuf::DmaBufBuffer> {
-        use std::sync::Arc;
-
         let frame = self.frame_queue.get_render_frame()?;
         let dmabuf_data = frame.dmabuf()?;
 
@@ -1037,12 +1039,12 @@ impl VideoPlayer {
             "Got DMA-BUF frame - TRUE ZERO-COPY!"
         );
 
+        // IMPORTANT: Share Arc<OwnedFd> references instead of duplicating FDs.
+        // Previously this called try_clone_to_owned() which leaked FDs over time.
         let mut planes = Vec::with_capacity(dmabuf_data.planes.len());
         for plane_data in &dmabuf_data.planes {
-            use std::os::fd::AsFd;
-            let fd = plane_data.fd.as_fd().try_clone_to_owned().ok()?;
             planes.push(crate::dmabuf::DmaBufPlane {
-                fd: Arc::new(fd),
+                fd: std::sync::Arc::clone(&plane_data.fd),
                 offset: plane_data.offset,
                 stride: plane_data.stride,
             });

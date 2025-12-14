@@ -831,6 +831,11 @@ impl Wallpaper {
             layer.needs_redraw = false;
         }
 
+        // Destroy the wl_buffer to trigger compositor cleanup of cached textures.
+        // This is critical to prevent FD leaks in the compositor - without this,
+        // the compositor's texture cache accumulates entries for each frame.
+        wl_buffer.destroy();
+
         let total_elapsed = Instant::now().duration_since(start);
         tracing::debug!(
             ?total_elapsed,
