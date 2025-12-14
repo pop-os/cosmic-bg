@@ -30,7 +30,7 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 static CODEC_SUPPORT: OnceLock<CodecSupport> = OnceLock::new();
 
 /// System codec capabilities detected at runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CodecSupport {
     /// NVIDIA hardware decode available (NVDEC)
     pub has_nvidia: bool,
@@ -38,16 +38,6 @@ pub struct CodecSupport {
     pub has_vaapi: bool,
     /// List of available hardware decoder element names
     pub hw_decoders: Vec<String>,
-}
-
-impl Default for CodecSupport {
-    fn default() -> Self {
-        Self {
-            has_nvidia: false,
-            has_vaapi: false,
-            hw_decoders: Vec::new(),
-        }
-    }
 }
 
 /// Detect available codec support on the current system.

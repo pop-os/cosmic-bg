@@ -1022,7 +1022,7 @@ impl VideoPlayer {
     }
 
     /// Try to get a DMA-BUF frame for zero-copy rendering.
-    /// 
+    ///
     /// NOTE: This shares the file descriptor references from the frame queue.
     /// The returned DmaBufBuffer shares Arc<OwnedFd> with the queued frame,
     /// avoiding FD duplication on every render (which would cause FD leaks).
