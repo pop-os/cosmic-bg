@@ -21,6 +21,7 @@
 //! | Format | Extension | Hardware Decode Support |
 //! |--------|-----------|------------------------|
 //! | GIF    | `.gif`    | N/A (CPU decoded, cached in memory) |
+//! | AVIF   | `.avif`   | AV1 hardware decode (VAAPI, NVDEC) |
 //! | MPEG-4 | `.mp4`, `.m4v` | NVIDIA (all codecs), AMD/Intel (VP9, AV1) |
 //! | WebM   | `.webm`   | Full (VP8, VP9, AV1) |
 //! | Matroska | `.mkv`  | Depends on contained codec |

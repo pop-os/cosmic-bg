@@ -119,7 +119,7 @@ pub struct Gradient {
 /// # Variants
 ///
 /// - `Path`: A static image or animated file (GIF, video). The file extension
-///   determines how it's rendered. Supported: jpg, png, webp, gif, mp4, webm, mkv.
+///   determines how it's rendered. Supported: jpg, png, webp, avif, jxl, gif, mp4, webm, mkv.
 /// - `Color`: A solid color or gradient background.
 ///
 /// # Example (RON format)

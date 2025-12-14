@@ -25,6 +25,8 @@ use super::video_player::VideoPlayer;
 enum PlayerSource {
     /// GIF frames loaded into memory.
     Gif(Vec<AnimatedFrame>),
+    /// AVIF frames loaded into memory.
+    Avif(Vec<AnimatedFrame>),
     /// Video player instance.
     Video(VideoPlayer),
 }
@@ -62,6 +64,12 @@ impl AnimatedPlayer {
                 let frames = Self::load_gif_frames(p)?;
                 info!(frames = frames.len(), "Loaded GIF frames");
                 PlayerSource::Gif(frames)
+            }
+            AnimatedSource::Avif(p) => {
+                debug!(path = %p.display(), "Loading as animated AVIF");
+                let frames = Self::load_avif_frames(p)?;
+                info!(frames = frames.len(), "Loaded AVIF frames");
+                PlayerSource::Avif(frames)
             }
             AnimatedSource::Video(p) => {
                 debug!(path = %p.display(), "Loading as video");
@@ -170,6 +178,144 @@ impl AnimatedPlayer {
         Ok(frames)
     }
 
+    /// Load animated AVIF (AVIS) frames into memory using libavif.
+    fn load_avif_frames(path: &Path) -> eyre::Result<Vec<AnimatedFrame>> {
+        use std::ffi::CString;
+
+        use libavif_sys::*;
+
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid path encoding"))?;
+        let c_path = CString::new(path_str)?;
+
+        let mut frames = Vec::new();
+
+        unsafe {
+            // Create decoder
+            let decoder = avifDecoderCreate();
+            if decoder.is_null() {
+                return Err(eyre::eyre!("Failed to create AVIF decoder"));
+            }
+
+            // Ensure we clean up on exit
+            struct DecoderGuard(*mut avifDecoder);
+            impl Drop for DecoderGuard {
+                fn drop(&mut self) {
+                    unsafe { avifDecoderDestroy(self.0) };
+                }
+            }
+            let _guard = DecoderGuard(decoder);
+
+            // Set IO from file
+            let result = avifDecoderSetIOFile(decoder, c_path.as_ptr());
+            if result != AVIF_RESULT_OK {
+                return Err(eyre::eyre!("Failed to set AVIF IO: {}", result));
+            }
+
+            // Parse the file
+            let result = avifDecoderParse(decoder);
+            if result != AVIF_RESULT_OK {
+                return Err(eyre::eyre!("Failed to parse AVIF: {}", result));
+            }
+
+            let image_count = (*decoder).imageCount;
+            tracing::debug!(image_count, "AVIF has frames");
+
+            // Decode each frame
+            for frame_idx in 0..image_count {
+                let result = avifDecoderNextImage(decoder);
+                if result != AVIF_RESULT_OK {
+                    if result == AVIF_RESULT_NO_IMAGES_REMAINING {
+                        break;
+                    }
+                    return Err(eyre::eyre!(
+                        "Failed to decode AVIF frame {}: {}",
+                        frame_idx,
+                        result
+                    ));
+                }
+
+                let avif_image = (*decoder).image;
+                if avif_image.is_null() {
+                    return Err(eyre::eyre!("Null image pointer for frame {}", frame_idx));
+                }
+
+                let width = (*avif_image).width;
+                let height = (*avif_image).height;
+
+                // Create RGB image for conversion
+                let mut rgb: avifRGBImage = std::mem::zeroed();
+                avifRGBImageSetDefaults(&mut rgb, avif_image);
+                rgb.format = AVIF_RGB_FORMAT_RGBA;
+                rgb.depth = 8;
+
+                // Allocate pixel buffer
+                avifRGBImageAllocatePixels(&mut rgb);
+
+                struct RgbGuard(*mut avifRGBImage);
+                impl Drop for RgbGuard {
+                    fn drop(&mut self) {
+                        unsafe { avifRGBImageFreePixels(self.0) };
+                    }
+                }
+                let _rgb_guard = RgbGuard(&mut rgb);
+
+                // Convert YUV to RGB
+                let result = avifImageYUVToRGB(avif_image, &mut rgb);
+                if result != AVIF_RESULT_OK {
+                    return Err(eyre::eyre!(
+                        "Failed to convert AVIF frame {} to RGB: {}",
+                        frame_idx,
+                        result
+                    ));
+                }
+
+                // Copy pixel data
+                let pixel_count = (width * height * 4) as usize;
+                let pixels = std::slice::from_raw_parts(rgb.pixels, pixel_count);
+                let rgba_data: Vec<u8> = pixels.to_vec();
+
+                // Create image
+                let rgba_image =
+                    image::RgbaImage::from_raw(width, height, rgba_data).ok_or_else(|| {
+                        eyre::eyre!("Failed to create image from AVIF frame {}", frame_idx)
+                    })?;
+
+                // Get frame duration
+                // imageTiming.duration is in seconds (f64)
+                let duration_secs = (*decoder).imageTiming.duration;
+                let duration = if duration_secs > 0.0 {
+                    Duration::from_secs_f64(duration_secs)
+                } else {
+                    // Default to 100ms if no timing info
+                    Duration::from_millis(100)
+                };
+                let duration = duration.max(MIN_FRAME_DURATION);
+
+                tracing::debug!(
+                    frame = frame_idx,
+                    width,
+                    height,
+                    duration_ms = duration.as_millis(),
+                    "AVIF frame loaded"
+                );
+
+                frames.push(AnimatedFrame {
+                    image: DynamicImage::ImageRgba8(rgba_image),
+                    duration,
+                    pts: None,
+                });
+            }
+        }
+
+        if frames.is_empty() {
+            return Err(eyre::eyre!("No frames found in AVIF"));
+        }
+
+        Ok(frames)
+    }
+
     /// Stop playback.
     pub fn stop(&mut self) -> eyre::Result<()> {
         if let PlayerSource::Video(player) = &self.source {
@@ -182,7 +328,9 @@ impl AnimatedPlayer {
     #[must_use]
     pub fn current_frame(&self) -> Option<AnimatedFrame> {
         match &self.source {
-            PlayerSource::Gif(frames) => frames.get(self.current_index).cloned(),
+            PlayerSource::Gif(frames) | PlayerSource::Avif(frames) => {
+                frames.get(self.current_index).cloned()
+            }
             PlayerSource::Video(player) => player.current_frame(),
         }
     }
@@ -193,18 +341,18 @@ impl AnimatedPlayer {
         self.current_index
     }
 
-    /// Advance to the next frame (for GIF playback).
+    /// Advance to the next frame (for GIF/AVIF playback).
     ///
     /// Returns `true` if the animation should continue, `false` to stop.
-    /// GIFs always loop, so they always return `true` (unless empty).
+    /// GIFs and AVIFs always loop, so they always return `true` (unless empty).
     pub fn advance(&mut self) -> bool {
         match &mut self.source {
-            PlayerSource::Gif(frames) => {
+            PlayerSource::Gif(frames) | PlayerSource::Avif(frames) => {
                 if frames.is_empty() {
                     return false;
                 }
                 self.current_index = (self.current_index + 1) % frames.len();
-                // GIFs always loop - always return true
+                // GIFs/AVIFs always loop - always return true
                 true
             }
             PlayerSource::Video(player) => {
@@ -218,7 +366,7 @@ impl AnimatedPlayer {
     #[must_use]
     pub fn current_frame_duration(&self) -> Duration {
         match &self.source {
-            PlayerSource::Gif(frames) => frames
+            PlayerSource::Gif(frames) | PlayerSource::Avif(frames) => frames
                 .get(self.current_index)
                 .map(|f| f.duration)
                 .unwrap_or(DEFAULT_FRAME_DURATION),
@@ -243,7 +391,7 @@ impl AnimatedPlayer {
     pub fn video_dimensions(&self) -> Option<(u32, u32)> {
         match &self.source {
             PlayerSource::Video(player) => player.video_dimensions(),
-            PlayerSource::Gif(_) => None,
+            PlayerSource::Gif(_) | PlayerSource::Avif(_) => None,
         }
     }
 
@@ -251,7 +399,7 @@ impl AnimatedPlayer {
     pub fn pull_frame_to_buffer(&self, dest: &mut [u8]) -> Option<VideoFrameInfo> {
         match &self.source {
             PlayerSource::Video(player) => player.pull_frame_to_buffer(dest),
-            PlayerSource::Gif(_) => None,
+            PlayerSource::Gif(_) | PlayerSource::Avif(_) => None,
         }
     }
 
@@ -259,7 +407,7 @@ impl AnimatedPlayer {
     pub fn pull_cached_frame(&self, dest: &mut [u8]) -> Option<VideoFrameInfo> {
         match &self.source {
             PlayerSource::Video(player) => player.pull_cached_frame(dest),
-            PlayerSource::Gif(_) => None,
+            PlayerSource::Gif(_) | PlayerSource::Avif(_) => None,
         }
     }
 
@@ -268,7 +416,7 @@ impl AnimatedPlayer {
     pub fn try_get_dmabuf_frame(&self) -> Option<crate::dmabuf::DmaBufBuffer> {
         match &self.source {
             PlayerSource::Video(player) => player.try_get_dmabuf_frame(),
-            PlayerSource::Gif(_) => None,
+            PlayerSource::Gif(_) | PlayerSource::Avif(_) => None,
         }
     }
 
@@ -277,7 +425,7 @@ impl AnimatedPlayer {
     pub fn process_messages(&mut self) -> bool {
         match &mut self.source {
             PlayerSource::Video(player) => player.check_eos(),
-            PlayerSource::Gif(_) => false,
+            PlayerSource::Gif(_) | PlayerSource::Avif(_) => false,
         }
     }
 }
@@ -290,6 +438,7 @@ impl std::fmt::Debug for AnimatedPlayer {
                 "source_type",
                 &match &self.source {
                     PlayerSource::Gif(_) => "GIF",
+                    PlayerSource::Avif(_) => "AVIF",
                     PlayerSource::Video(_) => "Video",
                 },
             )

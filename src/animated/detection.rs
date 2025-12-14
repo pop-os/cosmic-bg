@@ -15,6 +15,7 @@ use tracing::{debug, info};
 /// Video container extensions that may contain playable video.
 /// These are checked case-insensitively when determining if a file can be
 /// rendered as an animated wallpaper.
+/// Note: AVIF is handled specially - only animated AVIF (AVIS) is treated as video
 const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4",  // MPEG-4 container (typically H.264/H.265 codec)
     "webm", // WebM container (VP8/VP9/AV1)
@@ -129,8 +130,13 @@ fn detect_codec_support() -> CodecSupport {
 /// Check if a path points to an animated/video file.
 ///
 /// This checks both:
-/// 1. The file extension is a known video/GIF format
-/// 2. The system has capability to decode video (always true for GIF)
+/// 1. The file extension is a known video/GIF/AVIF format
+/// 2. The system has capability to decode it
+///
+/// Supported formats:
+/// - GIF: CPU decoded via the `gif` crate
+/// - Animated AVIF (AVIS): CPU decoded via libavif
+/// - Video files: Hardware-accelerated via GStreamer
 #[must_use]
 pub fn is_animated_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -142,6 +148,16 @@ pub fn is_animated_file(path: &Path) -> bool {
     // GIF is always supported (CPU decoded)
     if ext_lower == "gif" {
         return true;
+    }
+
+    // AVIF is treated as animated if it's an AVIS (AVIF Image Sequence)
+    // Animated AVIF is CPU-decoded using libavif, similar to GIF
+    if ext_lower == "avif" {
+        if is_animated_avif(path) {
+            debug!(path = %path.display(), "Animated AVIF detected - will use CPU decoding");
+            return true;
+        }
+        return false;
     }
 
     // Video files - check extension first (quick filter)
@@ -163,7 +179,7 @@ pub fn is_gif_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a path points to a video file (non-GIF animated).
+/// Check if a path points to a video file (non-GIF, non-AVIF animated).
 #[must_use]
 pub fn is_video_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -171,7 +187,76 @@ pub fn is_video_file(path: &Path) -> bool {
     };
 
     let ext_lower = ext.to_lowercase();
+
+    // AVIF is handled separately as its own source type
+    if ext_lower == "avif" {
+        return false;
+    }
+
     VIDEO_EXTENSIONS.contains(&ext_lower.as_str())
+}
+
+/// Check if an AVIF file is animated (AVIF Image Sequence).
+///
+/// AVIF files use the ISO Base Media File Format (ISOBMFF). The file starts
+/// with an 'ftyp' box containing a major brand:
+/// - `avif` = static AVIF image
+/// - `avis` = AVIF Image Sequence (animated)
+///
+/// This function reads the file header to detect animated AVIF files.
+#[must_use]
+pub fn is_animated_avif(path: &Path) -> bool {
+    use std::fs::File;
+    use std::io::Read;
+
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+
+    // ISOBMFF structure: [4 bytes size][4 bytes type][4 bytes major_brand]...
+    // We need to read the ftyp box and check the major brand
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+
+    // Check if this is an ftyp box
+    let box_type = &header[4..8];
+    if box_type != b"ftyp" {
+        return false;
+    }
+
+    // Check the major brand (bytes 8-12)
+    let major_brand = &header[8..12];
+
+    // 'avis' indicates AVIF Image Sequence (animated)
+    if major_brand == b"avis" {
+        debug!(path = %path.display(), "Detected animated AVIF (AVIS)");
+        return true;
+    }
+
+    // Also check compatible_brands for 'avis' in case major_brand is different
+    // Read more of the ftyp box to check compatible brands
+    let box_size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    if box_size > 12 && box_size <= 256 {
+        let remaining = box_size - 12;
+        let mut brands_data = vec![0u8; remaining];
+        if file.read_exact(&mut brands_data).is_ok() {
+            // Skip minor_version (4 bytes), then check compatible_brands
+            if remaining >= 4 {
+                let compatible_brands = &brands_data[4..];
+                // Each brand is 4 bytes
+                for chunk in compatible_brands.chunks_exact(4) {
+                    if chunk == b"avis" {
+                        debug!(path = %path.display(), "Detected animated AVIF (AVIS in compatible_brands)");
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Demote NVIDIA decoders if CUDA is not actually functional.

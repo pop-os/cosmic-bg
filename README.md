@@ -2,8 +2,8 @@
 
 COSMIC session service which applies backgrounds to displays. Supports the following features:
 
-- Supports common image formats supported by [image-rs](https://github.com/image-rs/image#supported-image-formats)
-- **Live/Animated wallpapers** - GIF animations and video formats (MP4, WebM, MKV, etc.) with hardware acceleration
+- Supports common image formats: JPEG, PNG, WebP, AVIF, JPEG XL, and more via [image-rs](https://github.com/image-rs/image#supported-image-formats)
+- **Live/Animated wallpapers** - GIF animations, animated AVIF, and video formats (MP4, WebM, MKV, etc.) with hardware acceleration
 - 8 and 10-bit background surface layers
 - Use of colors and gradients for backgrounds
 - Per-display background application
@@ -15,9 +15,10 @@ The `animated` feature (enabled by default) adds support for animated wallpapers
 
 ### Supported Formats
 
-| Format | Extension | Hardware Decode Support |
-|--------|-----------|------------------------|
-| GIF | `.gif` | N/A (CPU decoded, cached in memory) |
+| Format | Extension | Decode Method |
+|--------|-----------|---------------|
+| GIF | `.gif` | CPU (frames cached in memory) |
+| Animated AVIF | `.avif` | CPU via libavif (frames cached in memory) |
 | MPEG-4 | `.mp4`, `.m4v` | NVIDIA (all codecs), AMD/Intel (VP9, AV1) |
 | WebM | `.webm` | Full (VP8, VP9, AV1) - **Recommended for AMD** |
 | Matroska | `.mkv` | Depends on contained codec |
@@ -62,6 +63,7 @@ This ensures videos play correctly regardless of GPU vendor or codec availabilit
 | H.264 1080p on NVIDIA (NVDEC) | ~0.3-0.5% | Hardware decode |
 | H.264 4K on AMD (software) | ~60-80% | Software fallback |
 | GIF animation | ~1-5% | Depends on frame count/size |
+| Animated AVIF | ~1-5% | Depends on frame count/size |
 
 ### Configuration
 
@@ -96,12 +98,27 @@ cargo build --release --no-default-features
 
 Developers should install Rust from from https://rustup.rs/.
 
+### Build Dependencies
+
 - just
 - cargo / rustc
 - libwayland-dev
 - libxkbcommon-dev
 - mold
 - pkg-config
+- **libdav1d-devel** - Required for static AVIF image decoding
+- **nasm** - Required for building the dav1d AV1 decoder (used for animated AVIF)
+
+```bash
+# Fedora
+sudo dnf install libdav1d-devel nasm
+
+# Ubuntu/Debian
+sudo apt install libdav1d-dev nasm
+
+# Arch
+sudo pacman -S dav1d nasm
+```
 
 ### For Live Wallpaper Support (animated feature)
 
