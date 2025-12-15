@@ -130,9 +130,17 @@ impl VideoPlayer {
 
         let escaped_path = path_str.replace('\\', "\\\\").replace('"', "\\\"");
 
-        let has_vaapi = gstreamer::ElementFactory::find("vaapipostproc").is_some();
+        // Check for VAAPI support - modern GStreamer 1.20+ uses "va" elements,
+        // older versions used "vaapi" elements
+        let has_vaapi = gstreamer::ElementFactory::find("vapostproc").is_some()
+            || gstreamer::ElementFactory::find("vaapipostproc").is_some();
         let has_nvdec = gstreamer::ElementFactory::find("nvh264dec").is_some();
         let has_cuda_dmabuf = gstreamer::ElementFactory::find("cudadmabufupload").is_some();
+
+        debug!(
+            has_vaapi,
+            has_nvdec, has_cuda_dmabuf, "Hardware acceleration support detected"
+        );
 
         if has_cuda_dmabuf {
             info!(
@@ -339,7 +347,7 @@ impl VideoPlayer {
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        // Check which VAAPI decoders are available
+        // Check which VAAPI decoders are available (supports both old "vaapi*" and new "va*" names)
         let has_vaapi_h264 = gstreamer::ElementFactory::find("vaapih264dec").is_some()
             || gstreamer::ElementFactory::find("vah264dec").is_some();
         let has_vaapi_h265 = gstreamer::ElementFactory::find("vaapih265dec").is_some()
@@ -348,6 +356,15 @@ impl VideoPlayer {
             || gstreamer::ElementFactory::find("vavp9dec").is_some();
         let has_vaapi_av1 = gstreamer::ElementFactory::find("vaapiav1dec").is_some()
             || gstreamer::ElementFactory::find("vaav1dec").is_some();
+
+        debug!(
+            ext = %ext,
+            has_vaapi_h264,
+            has_vaapi_h265,
+            has_vaapi_vp9,
+            has_vaapi_av1,
+            "VAAPI decoder availability check"
+        );
 
         // Only use VAAPI pipeline if we have the appropriate decoder
         // MP4/MOV typically contain H.264/H.265, WebM contains VP8/VP9/AV1
@@ -373,8 +390,6 @@ impl VideoPlayer {
         // the pipeline string and let the real appsink (with propose_allocation
         // callback) handle the negotiation.
         //
-        // Using format=DMA_DRM tells GStreamer to negotiate DRM format codes.
-        // The pipeline will be: decode → vapostproc → DMA-BUF → appsink
         let pipeline = format!(
             concat!(
                 "filesrc location=\"{path}\" ! ",

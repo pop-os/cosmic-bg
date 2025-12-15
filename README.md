@@ -19,8 +19,8 @@ The `animated` feature (enabled by default) adds support for animated wallpapers
 |--------|-----------|---------------|
 | GIF | `.gif` | CPU (frames cached in memory) |
 | Animated AVIF | `.avif` | CPU via libavif (frames cached in memory) |
-| MPEG-4 | `.mp4`, `.m4v` | NVIDIA (all codecs), AMD/Intel (VP9, AV1) |
-| WebM | `.webm` | Full (VP8, VP9, AV1) - **Recommended for AMD** |
+| MPEG-4 | `.mp4`, `.m4v` | NVIDIA (all codecs), AMD/Intel (H.264/H.265 with freeworld drivers, VP9, AV1) |
+| WebM | `.webm` | Full (VP8, VP9, AV1) - **Recommended for AMD without freeworld drivers** |
 | Matroska | `.mkv` | Depends on contained codec |
 | AVI | `.avi` | Depends on contained codec |
 | QuickTime | `.mov` | Depends on contained codec |
@@ -35,11 +35,12 @@ The `animated` feature (enabled by default) adds support for animated wallpapers
 
 #### AMD/Intel GPUs (VAAPI)
 - **Driver**: Mesa 21.0+ with VAAPI support
-- **GStreamer plugins**: `gstreamer1-vaapi`
+- **GStreamer plugins**: `gstreamer1-plugins-bad` (GStreamer 1.20+ provides `vah264dec`, `vapostproc`, etc.)
+- **Zero-copy**: Native DMA-BUF support via `vapostproc` for efficient compositor rendering
 - **Supported codecs** (varies by GPU generation):
-  - AMD RDNA/RDNA2+: VP9, AV1 (H.264/H.265 may require non-free firmware)
+  - AMD RDNA/RDNA2+: VP9, AV1 (H.264/H.265 requires `mesa-va-drivers-freeworld` on Fedora)
   - Intel Gen9+: H.264, H.265, VP9, AV1
-- **Recommendation**: Use **VP9 or AV1** encoded videos for best AMD compatibility
+- **Recommendation**: Use **VP9 or AV1** encoded videos for best AMD compatibility, or install freeworld drivers for H.264/H.265
 
 #### Software Fallback
 If no hardware decoder is available, the system falls back to software decoding via GStreamer's `decodebin`. For H.264 content on systems without hardware decode (e.g., AMD on Fedora), install `openh264` for software decode support.
@@ -60,8 +61,9 @@ This ensures videos play correctly regardless of GPU vendor or codec availabilit
 | Scenario | CPU Usage | Notes |
 |----------|-----------|-------|
 | VP9 1080p on AMD (VAAPI) | ~0.2-0.5% | Hardware decode |
+| H.264 1080p on AMD (VAAPI + freeworld) | ~0.2-0.5% | Hardware decode with mesa-va-drivers-freeworld |
 | H.264 1080p on NVIDIA (NVDEC) | ~0.3-0.5% | Hardware decode |
-| H.264 4K on AMD (software) | ~60-80% | Software fallback |
+| H.264 4K on AMD (software) | ~60-80% | Software fallback (no freeworld drivers) |
 | GIF animation | ~1-5% | Depends on frame count/size |
 | Animated AVIF | ~1-5% | Depends on frame count/size |
 
@@ -130,8 +132,9 @@ GStreamer 1.20+ with the following plugins:
 - `gstreamer1-plugins-good` - Container demuxers (MP4, WebM, MKV)
 
 **Hardware Acceleration (recommended)**:
-- `gstreamer1-plugins-bad` - NVIDIA NVDEC support (`nvh264dec`, etc.)
-- `gstreamer1-vaapi` - AMD/Intel VAAPI support (`vaapivp9dec`, etc.)
+- `gstreamer1-plugins-bad` - NVIDIA NVDEC (`nvh264dec`, etc.) and AMD/Intel VA-API (`vah264dec`, `vapostproc`, etc.)
+
+> **Note**: GStreamer 1.20+ includes the modern `va` plugin in `gstreamer1-plugins-bad`. The legacy `gstreamer1-vaapi` package is no longer required on modern systems.
 
 **Example installation**:
 
@@ -149,19 +152,33 @@ sudo pacman -S gstreamer gst-plugins-base gst-plugins-good \
                gst-plugins-bad gstreamer-vaapi
 ```
 
-**H.264/MP4 support for AMD (Fedora)**:
+**H.264/H.265 Hardware Decode for AMD (Fedora)**:
 
-AMD GPUs on Fedora lack VAAPI H.264 hardware decode due to patent restrictions. To play H.264/MP4 files, install the OpenH264 software decoder:
+AMD GPUs on Fedora lack VAAPI H.264/H.265 hardware decode by default due to patent restrictions in the standard Mesa VA drivers. To enable **hardware-accelerated** H.264/H.265 decoding, install the freeworld Mesa VA drivers from RPM Fusion:
 
 ```bash
-# Enable Cisco OpenH264 repository (ships a patent-licensed build)
-sudo dnf config-manager --enable fedora-cisco-openh264
+# Requires RPM Fusion free repository to be enabled
+# https://rpmfusion.org/Configuration
 
-# Install OpenH264 GStreamer plugin
-sudo dnf install gstreamer1-plugin-openh264
+# Replace standard Mesa VA drivers with freeworld version (includes H.264/H.265)
+sudo dnf swap mesa-va-drivers mesa-va-drivers-freeworld
 ```
 
-Alternatively, use VP9/WebM or AV1 encoded videos which have full VAAPI hardware support on AMD.
+Verify hardware decode is working:
+```bash
+vainfo | grep -i h264
+# Should show: VAProfileH264Main : VAEntrypointVLD
+```
+
+**Software fallback (if hardware decode unavailable)**:
+
+If you cannot install the freeworld drivers, you can use the OpenH264 software decoder (high CPU usage for HD/4K content):
+
+```bash
+sudo dnf --enable-repo=fedora-cisco-openh264 install gstreamer1-plugin-openh264
+```
+
+**Recommendation**: Use VP9/WebM or AV1 encoded videos which have full VAAPI hardware support on AMD without needing freeworld drivers.
 
 ### Install
 

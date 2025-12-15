@@ -97,9 +97,11 @@ fn detect_codec_support() -> CodecSupport {
         }
     }
 
-    // Check for vapostproc (required for DMA-BUF output)
+    // Check for vapostproc (required for DMA-BUF output) - both new and old names
     if gstreamer::ElementFactory::find("vapostproc").is_some() {
         support.hw_decoders.push("vapostproc".to_string());
+    } else if gstreamer::ElementFactory::find("vaapipostproc").is_some() {
+        support.hw_decoders.push("vaapipostproc".to_string());
     }
 
     // Check for CUDA DMA-BUF upload (NVIDIA zero-copy)
