@@ -122,11 +122,10 @@ fn detect_codec_support() -> CodecSupport {
 /// Check if a path points to an animated/video file.
 ///
 /// This checks both:
-/// 1. The file extension is a known video/GIF/AVIF format
+/// 1. The file extension is a known video/AVIF format
 /// 2. The system has capability to decode it
 ///
 /// Supported formats:
-/// - GIF: CPU decoded via the `gif` crate
 /// - Animated AVIF (AVIS): CPU decoded via libavif
 /// - Video files: Hardware-accelerated via GStreamer
 #[must_use]
@@ -137,13 +136,8 @@ pub fn is_animated_file(path: &Path) -> bool {
 
     let ext_lower = ext.to_lowercase();
 
-    // GIF is always supported (CPU decoded)
-    if ext_lower == "gif" {
-        return true;
-    }
-
     // AVIF is treated as animated if it's an AVIS (AVIF Image Sequence)
-    // Animated AVIF is CPU-decoded using libavif, similar to GIF
+    // Animated AVIF is CPU-decoded using libavif
     if ext_lower == "avif" {
         if is_animated_avif(path) {
             debug!(path = %path.display(), "Animated AVIF detected - will use CPU decoding");
@@ -162,16 +156,7 @@ pub fn is_animated_file(path: &Path) -> bool {
     true
 }
 
-/// Check if a path points to a GIF file.
-#[must_use]
-pub fn is_gif_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("gif"))
-        .unwrap_or(false)
-}
-
-/// Check if a path points to a video file (non-GIF, non-AVIF animated).
+/// Check if a path points to a video file (non-AVIF animated).
 #[must_use]
 pub fn is_video_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {

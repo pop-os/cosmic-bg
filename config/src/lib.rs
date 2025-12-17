@@ -95,7 +95,7 @@ pub struct Entry {
     pub scaling_mode: ScalingMode,
     #[serde(default)]
     pub sampling_method: SamplingMethod,
-    /// Animation playback settings for animated wallpapers (GIF, video)
+    /// Animation playback settings for animated wallpapers (AVIF, video)
     #[serde(default)]
     pub animation_settings: AnimationSettings,
 }
@@ -118,8 +118,8 @@ pub struct Gradient {
 ///
 /// # Variants
 ///
-/// - `Path`: A static image or animated file (GIF, video). The file extension
-///   determines how it's rendered. Supported: jpg, png, webp, avif, jxl, gif, mp4, webm, mkv.
+/// - `Path`: A static image or animated file (AVIF, video). The file extension
+///   determines how it's rendered. Supported: jpg, png, webp, avif, jxl, mp4, webm, mkv.
 /// - `Color`: A solid color or gradient background.
 ///
 /// # Example (RON format)
@@ -139,14 +139,14 @@ pub enum Source {
     /// Background image(s) from a path.
     ///
     /// If the path points to a directory, images are rotated based on
-    /// `rotation_frequency`. If it points to an animated file (GIF, video),
+    /// `rotation_frequency`. If it points to an animated file (AVIF, video),
     /// it will be rendered as an animated wallpaper.
     Path(PathBuf),
     /// A background color or gradient.
     Color(Color),
 }
 
-/// Settings for animated wallpaper playback (GIF and video files).
+/// Settings for animated wallpaper playback (AVIF and video files).
 ///
 /// These settings control how animated wallpapers are rendered. The defaults
 /// are optimized for smooth playback with minimal resource usage.
@@ -189,16 +189,6 @@ pub struct AnimationSettings {
     /// Note: This setting is currently reserved for future use.
     #[serde(default = "default_playback_speed")]
     pub playback_speed: f32,
-
-    /// Maximum number of frames to cache in memory (for GIF animations).
-    ///
-    /// Higher values use more memory but provide smoother playback for
-    /// animations with many frames. Video files stream from disk and
-    /// don't use this cache.
-    ///
-    /// Default: `30` frames
-    #[serde(default = "default_frame_cache_size")]
-    pub frame_cache_size: usize,
 }
 
 fn default_true() -> bool {
@@ -207,10 +197,6 @@ fn default_true() -> bool {
 
 fn default_playback_speed() -> f32 {
     1.0
-}
-
-fn default_frame_cache_size() -> usize {
-    30
 }
 
 impl AnimationSettings {

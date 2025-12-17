@@ -6,17 +6,7 @@
 mod tests {
     use std::path::Path;
 
-    use super::super::detection::{is_animated_avif, is_animated_file, is_gif_file, is_video_file};
-
-    #[test]
-    fn test_is_gif_file() {
-        assert!(is_gif_file(Path::new("test.gif")));
-        assert!(is_gif_file(Path::new("test.GIF")));
-        assert!(is_gif_file(Path::new("/path/to/animation.gif")));
-        assert!(!is_gif_file(Path::new("test.mp4")));
-        assert!(!is_gif_file(Path::new("test.webm")));
-        assert!(!is_gif_file(Path::new("test.png")));
-    }
+    use super::super::detection::{is_animated_avif, is_animated_file, is_video_file};
 
     #[test]
     fn test_is_video_file() {
@@ -30,17 +20,12 @@ mod tests {
         assert!(is_video_file(Path::new("test.ogv")));
         // Note: AVIF detection requires reading the file, so non-existent files return false
         assert!(!is_video_file(Path::new("test.avif")));
-        assert!(!is_video_file(Path::new("test.gif")));
         assert!(!is_video_file(Path::new("test.png")));
         assert!(!is_video_file(Path::new("test.jpg")));
     }
 
     #[test]
     fn test_is_animated_file() {
-        // GIF should be animated
-        assert!(is_animated_file(Path::new("test.gif")));
-        assert!(is_animated_file(Path::new("test.GIF")));
-
         // Videos should be animated
         assert!(is_animated_file(Path::new("test.mp4")));
         assert!(is_animated_file(Path::new("test.webm")));
@@ -59,7 +44,7 @@ mod tests {
     #[test]
     fn test_animated_extensions() {
         // All known animated extensions should be recognized (except AVIF which needs file reading)
-        let animated_extensions = ["gif", "mp4", "webm", "mkv", "avi", "mov", "m4v", "ogv"];
+        let animated_extensions = ["mp4", "webm", "mkv", "avi", "mov", "m4v", "ogv"];
 
         for ext in animated_extensions {
             let filename = format!("test.{ext}");
@@ -105,9 +90,6 @@ mod tests {
     fn test_case_insensitive_extensions() {
         // Test various case combinations
         let test_cases = [
-            ("test.GIF", true),
-            ("test.Gif", true),
-            ("test.gif", true),
             ("test.MP4", true),
             ("test.Mp4", true),
             ("test.mp4", true),
@@ -132,15 +114,13 @@ mod tests {
         assert!(!is_animated_file(Path::new("/path/to/file")));
 
         // Hidden files with extensions
-        assert!(is_animated_file(Path::new(".hidden.gif")));
         assert!(is_animated_file(Path::new(".hidden.mp4")));
 
         // Multiple dots
-        assert!(is_animated_file(Path::new("test.backup.gif")));
         assert!(is_animated_file(Path::new("my.video.file.mp4")));
 
         // Weird paths
-        assert!(is_animated_file(Path::new("./test.gif")));
+        assert!(is_animated_file(Path::new("./test.mp4")));
         assert!(is_animated_file(Path::new("../test.mp4")));
     }
 

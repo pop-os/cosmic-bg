@@ -31,6 +31,7 @@ use super::types::{AnimatedFrame, DEFAULT_FRAME_DURATION, MIN_FRAME_DURATION, Vi
 /// Shared state for receiving frames from GStreamer pipeline.
 pub(crate) struct VideoFrameState {
     /// Most recent decoded frame.
+    #[allow(dead_code)]
     pub current_frame: Option<AnimatedFrame>,
     /// Frame duration from video metadata.
     pub frame_duration: Duration,
@@ -871,6 +872,7 @@ impl VideoPlayer {
     }
 
     /// Pull the next available frame from the pipeline (non-blocking).
+    #[allow(dead_code)]
     pub fn pull_frame(&self) -> Option<AnimatedFrame> {
         match self
             .appsink
@@ -896,6 +898,7 @@ impl VideoPlayer {
         None
     }
 
+    #[allow(dead_code)]
     fn process_sample(&self, sample: &gstreamer::Sample) -> Option<AnimatedFrame> {
         let buffer = sample.buffer()?;
         let caps = sample.caps()?;
@@ -996,6 +999,7 @@ impl VideoPlayer {
 
     /// Get the current frame if available.
     #[must_use]
+    #[allow(dead_code)]
     pub fn current_frame(&self) -> Option<AnimatedFrame> {
         match self.pull_frame() {
             Some(frame) => Some(frame),

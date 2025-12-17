@@ -9,7 +9,7 @@ use std::{
 
 use image::DynamicImage;
 
-use super::detection::{is_animated_avif, is_gif_file, is_video_file};
+use super::detection::{is_animated_avif, is_video_file};
 
 /// Default frame duration if video metadata is unavailable (60 FPS).
 pub(crate) const DEFAULT_FRAME_DURATION: Duration = Duration::from_millis(16);
@@ -21,6 +21,7 @@ pub(crate) const MIN_FRAME_DURATION: Duration = Duration::from_millis(16);
 #[derive(Clone)]
 pub struct AnimatedFrame {
     /// The decoded image data (RGBA).
+    #[allow(dead_code)]
     pub image: DynamicImage,
     /// How long this frame should be displayed.
     pub duration: Duration,
@@ -45,8 +46,6 @@ pub struct VideoFrameInfo {
 /// Source type for animated content (for path identification).
 #[derive(Debug, Clone)]
 pub enum AnimatedSourceType {
-    /// GIF animation file.
-    Gif(PathBuf),
     /// AVIF Image Sequence (animated AVIF).
     Avif(PathBuf),
     /// Video file (MP4, WebM, etc.).
@@ -60,9 +59,7 @@ impl AnimatedSourceType {
     /// Create an animated source from a path.
     #[must_use]
     pub fn from_path(path: &Path) -> Option<Self> {
-        if is_gif_file(path) {
-            Some(AnimatedSourceType::Gif(path.to_path_buf()))
-        } else if is_animated_avif(path) {
+        if is_animated_avif(path) {
             Some(AnimatedSourceType::Avif(path.to_path_buf()))
         } else if is_video_file(path) {
             Some(AnimatedSourceType::Video(path.to_path_buf()))
@@ -75,9 +72,7 @@ impl AnimatedSourceType {
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            AnimatedSourceType::Gif(p)
-            | AnimatedSourceType::Avif(p)
-            | AnimatedSourceType::Video(p) => p,
+            AnimatedSourceType::Avif(p) | AnimatedSourceType::Video(p) => p,
         }
     }
 }

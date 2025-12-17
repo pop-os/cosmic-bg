@@ -168,7 +168,7 @@ pub struct Wallpaper {
     // Cache of source image, if `current_source` is a `Source::Path`
     current_image: Option<image::DynamicImage>,
     timer_token: Option<RegistrationToken>,
-    /// Animation state for animated wallpapers (GIF, video) - appsink mode
+    /// Animation state for animated wallpapers (AVIF, video) - appsink mode
     #[cfg(feature = "animated")]
     animation_state: Option<AnimationState>,
 }
@@ -386,10 +386,10 @@ impl Wallpaper {
         }
     }
 
-    /// Draw animated wallpaper frame (GIF or video).
+    /// Draw animated wallpaper frame (AVIF or video).
     ///
     /// For video: Uses wl_shm path (DMA-BUF is handled by timer callback with access to dmabuf_global).
-    /// For GIF: Uses CPU scaling with per-resolution frame caching.
+    /// For AVIF: Uses CPU scaling with per-resolution frame caching.
     #[cfg(feature = "animated")]
     fn draw_animated_frame(&mut self, start: Instant) {
         let Some(mut anim_state) = self.animation_state.take() else {
@@ -419,20 +419,20 @@ impl Wallpaper {
             return;
         }
 
-        // GIF: viewport scaling (GPU-accelerated)
-        self.draw_gif_frame(&mut anim_state, current_frame_idx, start);
+        // AVIF: viewport scaling (GPU-accelerated)
+        self.draw_avif_frame(&mut anim_state, current_frame_idx, start);
         self.animation_state = Some(anim_state);
     }
 
-    /// Draw a GIF frame using viewport scaling (GPU-accelerated).
+    /// Draw a AVIF frame using viewport scaling (GPU-accelerated).
     ///
     /// Similar to video rendering:
-    /// 1. Write native-resolution GIF frame to wl_shm buffer (small, fast)
+    /// 1. Write native-resolution AVIF frame to wl_shm buffer (small, fast)
     /// 2. Use wp_viewport to GPU-scale to screen resolution
     ///
     /// This is much faster than CPU scaling each frame.
     #[cfg(feature = "animated")]
-    fn draw_gif_frame(
+    fn draw_avif_frame(
         &mut self,
         anim_state: &mut AnimationState,
         current_frame_idx: usize,
@@ -442,13 +442,13 @@ impl Wallpaper {
         use sctk::shell::WaylandSurface;
 
         // Get current frame from player
-        let gif_frame = match anim_state.player.current_frame() {
+        let avif_frame = match anim_state.player.current_frame() {
             Some(f) => f,
             None => return,
         };
 
-        let frame_width = gif_frame.image.width();
-        let frame_height = gif_frame.image.height();
+        let frame_width = avif_frame.image.width();
+        let frame_height = avif_frame.image.height();
 
         // Find layers that need redraw and have pools
         let layers_needing_redraw: Vec<usize> = self
@@ -468,7 +468,7 @@ impl Wallpaper {
             return;
         }
 
-        // Create buffer at native GIF resolution (not screen resolution)
+        // Create buffer at native AVIF resolution (not screen resolution)
         let first_idx = layers_needing_redraw[0];
         let pool = self.layers[first_idx].pool.as_mut().unwrap();
 
@@ -482,13 +482,13 @@ impl Wallpaper {
         let (buffer, canvas) = match buffer_result {
             Ok(b) => b,
             Err(why) => {
-                tracing::error!(?why, "Failed to create GIF buffer");
+                tracing::error!(?why, "Failed to create AVIF buffer");
                 return;
             }
         };
 
         // Write native-resolution frame to buffer (fast - small buffer)
-        crate::draw::xrgb888_canvas(canvas, &gif_frame.image);
+        crate::draw::xrgb888_canvas(canvas, &avif_frame.image);
 
         let wl_buffer = buffer.wl_buffer();
 
@@ -533,7 +533,7 @@ impl Wallpaper {
             src_w = frame_width,
             src_h = frame_height,
             total = ?start.elapsed(),
-            "GIF frame drawn (viewport scaling)"
+            "AVIF frame drawn (viewport scaling)"
         );
     }
 
@@ -847,7 +847,7 @@ impl Wallpaper {
         true
     }
 
-    /// Initialize animation playback for animated files (GIF, video).
+    /// Initialize animation playback for animated files (AVIF, video).
     ///
     /// For video files, the video is scaled during decode to match the largest
     /// output resolution. This is more efficient than scaling during render.

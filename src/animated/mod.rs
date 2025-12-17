@@ -2,7 +2,7 @@
 
 //! Animated wallpaper support using GStreamer for hardware-accelerated video playback.
 //!
-//! This module provides smooth video and GIF wallpaper playback by leveraging:
+//! This module provides smooth video and animated AVIF wallpaper playback by leveraging:
 //! - **Hardware video decoding** via GStreamer's `decodebin` with automatic codec selection
 //! - **Multi-vendor GPU support**: NVIDIA (NVDEC), AMD/Intel (VAAPI), ARM (V4L2)
 //! - **Zero-copy DMA-BUF rendering** for maximum performance (no GPU→CPU→GPU roundtrip)
@@ -14,13 +14,12 @@
 //! - [`types`]: Core types (AnimatedFrame, RawVideoFrame, VideoFrameInfo, AnimatedSource)
 //! - [`detection`]: File type detection utilities
 //! - [`video_player`]: GStreamer-based hardware-accelerated video player
-//! - [`player`]: Unified animated player supporting GIF and video
+//! - [`player`]: Unified animated player supporting animated AVIF and video
 //!
 //! # Supported Formats
 //!
 //! | Format | Extension | Hardware Decode Support |
 //! |--------|-----------|------------------------|
-//! | GIF    | `.gif`    | N/A (CPU decoded, cached in memory) |
 //! | AVIF   | `.avif`   | AV1 hardware decode (VAAPI, NVDEC) |
 //! | MPEG-4 | `.mp4`, `.m4v` | NVIDIA (all codecs), AMD/Intel (VP9, AV1) |
 //! | WebM   | `.webm`   | Full (VP8, VP9, AV1) |
