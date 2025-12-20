@@ -29,7 +29,7 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use sctk::reexports::client::{QueueHandle, protocol::wl_buffer::WlBuffer};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 // We'll use wayland-client directly for linux-dmabuf protocol
 // since sctk doesn't provide high-level bindings yet
@@ -282,10 +282,7 @@ impl DmaBufState {
         let version = dmabuf_global.version.min(3);
         let dmabuf: ZwpLinuxDmabufV1 = globals.registry().bind(dmabuf_global.name, version, qh, ());
 
-        info!(
-            version,
-            "DMA-BUF protocol (zwp_linux_dmabuf_v1) bound - zero-copy rendering enabled"
-        );
+        debug!(version, "DMA-BUF protocol (zwp_linux_dmabuf_v1) available");
 
         Some(dmabuf)
     }

@@ -14,8 +14,9 @@
 //! 2. VAAPI DMA-BUF (AMD/Intel, requires GStreamer 1.26+)
 //! 3. NVIDIA GL DMA-BUF
 //! 4. GL download (decodebin → glupload → glcolorconvert → gldownload) - works with any decoder
-//! 5. NVIDIA GL wl_shm fallback
-//! 6. Software decode
+//! 5. VAAPI wl_shm (decodebin → vapostproc → appsink) - reliable fallback for VAAPI
+//! 6. NVIDIA GL wl_shm fallback
+//! 7. Software decode
 
 use std::{
     path::{Path, PathBuf},
@@ -118,14 +119,75 @@ impl VideoPlayer {
                 Ok(p) => {
                     let result = p.set_state(gstreamer::State::Paused);
                     if result.is_err() {
+                        debug!("Pipeline test failed: set_state returned error");
                         let _ = p.set_state(gstreamer::State::Null);
                         return false;
                     }
-                    let (res, state, _) = p.state(gstreamer::ClockTime::from_mseconds(500));
-                    let _ = p.set_state(gstreamer::State::Null);
-                    res.is_ok() && state == gstreamer::State::Paused
+
+                    // Check for errors on bus while waiting
+                    let bus = p.bus().unwrap();
+
+                    // Use longer timeout (5s) for GL pipelines which need EGL/GPU init
+                    let start = std::time::Instant::now();
+
+                    loop {
+                        // Check pipeline state
+                        let (res, state, pending) =
+                            p.state(gstreamer::ClockTime::from_mseconds(100));
+
+                        if res.is_ok() && state == gstreamer::State::Paused {
+                            let _ = p.set_state(gstreamer::State::Null);
+                            return true;
+                        }
+
+                        // Check for errors on bus
+                        while let Some(msg) = bus.pop() {
+                            use gstreamer::MessageView;
+                            match msg.view() {
+                                MessageView::Error(err) => {
+                                    debug!(
+                                        error = %err.error(),
+                                        debug = ?err.debug(),
+                                        "Pipeline test failed: GStreamer error"
+                                    );
+                                    let _ = p.set_state(gstreamer::State::Null);
+                                    return false;
+                                }
+                                MessageView::StateChanged(state_changed) => {
+                                    if let Some(src) = state_changed.src() {
+                                        if src.type_() == gstreamer::Pipeline::static_type() {
+                                            debug!(
+                                                old = ?state_changed.old(),
+                                                new = ?state_changed.current(),
+                                                "Pipeline state changed during test"
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Check timeout
+                        if start.elapsed() > std::time::Duration::from_secs(5) {
+                            debug!(
+                                result = ?res,
+                                state = ?state,
+                                pending = ?pending,
+                                elapsed_ms = start.elapsed().as_millis(),
+                                "Pipeline test timed out"
+                            );
+                            let _ = p.set_state(gstreamer::State::Null);
+                            return false;
+                        }
+
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
                 }
-                Err(_) => false,
+                Err(e) => {
+                    debug!(error = %e, "Pipeline test failed: parse error");
+                    false
+                }
             }
         };
 
@@ -195,6 +257,15 @@ impl VideoPlayer {
         .or_else(|| {
             Self::try_gl_download_pipeline(
                 &escaped_path,
+                &test_pipeline,
+                target_width,
+                target_height,
+            )
+        })
+        .or_else(|| {
+            Self::try_vaapi_wlshm_pipeline(
+                &escaped_path,
+                has_vapostproc,
                 &test_pipeline,
                 target_width,
                 target_height,
@@ -337,18 +408,38 @@ impl VideoPlayer {
         }
     }
 
-    /// Try VAAPI DMA-BUF pipeline. Only works with the new `vapostproc` element
-    /// (GStreamer 1.22+). The old `vaapipostproc` does NOT support DMA-BUF output.
+    /// Try VAAPI DMA-BUF pipeline. Only works with GStreamer 1.26+ where
+    /// vapostproc properly supports DMA-BUF export.
+    ///
+    /// IMPORTANT: We require GStreamer 1.26+ because:
+    /// - GStreamer 1.24 (Pop!_OS): DMA-BUF export from vapostproc causes GPU hangs
+    /// - GStreamer 1.26 (Fedora 42): DMA-BUF export works correctly
+    ///
+    /// We don't test the pipeline because the test itself can cause hangs on 1.24.
+    /// Instead, we trust that 1.26+ works (which it does on Fedora 42).
     fn try_vaapi_dmabuf_pipeline(
         path: &Path,
         escaped_path: &str,
         has_vapostproc: bool,
         try_dmabuf: bool,
-        test_pipeline: &impl Fn(&str) -> bool,
+        _test_pipeline: &impl Fn(&str) -> bool,
         target_width: u32,
         target_height: u32,
     ) -> Option<String> {
         if !try_dmabuf || !has_vapostproc {
+            return None;
+        }
+
+        // Check GStreamer version - VAAPI DMA-BUF only works reliably on 1.26+
+        // GStreamer 1.24 (Pop!_OS 22.04) has bugs that cause GPU hangs with DMA-BUF
+        let gst_version = gstreamer::version();
+        let (major, minor) = (gst_version.0, gst_version.1);
+
+        if major < 1 || (major == 1 && minor < 26) {
+            debug!(
+                gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
+                "Skipping VAAPI DMA-BUF - requires GStreamer 1.26+ (current has bugs with DMA-BUF export)"
+            );
             return None;
         }
 
@@ -374,6 +465,7 @@ impl VideoPlayer {
             has_vaapi_h265,
             has_vaapi_vp9,
             has_vaapi_av1,
+            gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
             "VAAPI decoder availability check"
         );
 
@@ -396,37 +488,27 @@ impl VideoPlayer {
             return None;
         }
 
-        // Test if VAAPI DMA-BUF actually works on this system
-        // GStreamer 1.24 (Ubuntu/Pop!_OS) doesn't support DMA-BUF export from vapostproc
-        // GStreamer 1.26+ (Fedora) does support it
-        let test_dmabuf_pipeline = format!(
-            "filesrc location=\"{path}\" ! decodebin ! vapostproc ! \
-             video/x-raw(memory:DMABuf) ! fakesink",
-            path = escaped_path,
-        );
-
-        if !test_pipeline(&test_dmabuf_pipeline) {
-            debug!("VAAPI DMA-BUF not supported on this GStreamer version, will use wl_shm path");
-            return None;
-        }
-
-        // DMA-BUF works! Use it with DMA_DRM format negotiation.
-        let pipeline = format!(
-            "filesrc location=\"{path}\" ! \
-             decodebin ! \
-             vapostproc ! \
-             video/x-raw(memory:DMABuf),format=DMA_DRM ! \
-             appsink name=sink sync=true max-buffers=4 drop=true",
+        // For GStreamer 1.26+, we trust that VAAPI DMA-BUF works.
+        // We DON'T test the pipeline because even the test can cause GPU hangs on some systems.
+        // The real appsink's propose_allocation callback adds VideoMeta support required for DMA-BUF.
+        let pipeline_str = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin ! ",
+                "vapostproc ! ",
+                "video/x-raw(memory:DMABuf),format=DMA_DRM ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
             path = escaped_path,
         );
 
         info!(
-            "Attempting VAAPI DMA-BUF zero-copy pipeline ({}x{})",
-            target_width, target_height
+            gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
+            "🚀 VAAPI DMA-BUF zero-copy pipeline ACTIVE ({}x{})", target_width, target_height
         );
-        debug!(pipeline = %pipeline, "VAAPI DMA-BUF pipeline");
+        debug!(pipeline = %pipeline_str, "VAAPI DMA-BUF pipeline");
 
-        Some(pipeline)
+        Some(pipeline_str)
     }
 
     fn try_nvdec_gl_dmabuf_pipeline(
@@ -495,6 +577,7 @@ impl VideoPlayer {
             return None;
         }
 
+        // Test the actual pipeline with appsink - fakesink may negotiate differently
         let pipeline = format!(
             "filesrc location=\"{path}\" ! \
              decodebin name=dec ! \
@@ -507,16 +590,55 @@ impl VideoPlayer {
             path = escaped_path,
         );
 
-        debug!(pipeline = %pipeline, "Trying GL download pipeline (decode → GL → CPU)");
+        debug!(pipeline = %pipeline, "Testing GL download pipeline");
+
+        if !test_pipeline(&pipeline) {
+            debug!("GL download pipeline test failed, falling back");
+            return None;
+        }
+
+        info!(
+            "GL download pipeline active - GPU color conversion with PBO transfer ({}x{})",
+            target_width, target_height
+        );
+        Some(pipeline)
+    }
+
+    /// Try VAAPI wl_shm pipeline using vapostproc for format conversion.
+    /// This is the reliable fallback for VAAPI systems when GL/DMA-BUF pipelines fail.
+    fn try_vaapi_wlshm_pipeline(
+        escaped_path: &str,
+        has_vapostproc: bool,
+        test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        if !has_vapostproc {
+            return None;
+        }
+
+        let pipeline = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin name=dec ! ",
+                "videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! ",
+                "vapostproc ! ",
+                "video/x-raw,format=BGRx ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Trying VAAPI + vapostproc pipeline");
 
         if test_pipeline(&pipeline) {
             info!(
-                "GL download pipeline active - GPU color conversion with PBO transfer ({}x{})",
+                "VAAPI wl_shm pipeline active - hardware decode with vapostproc ({}x{})",
                 target_width, target_height
             );
             Some(pipeline)
         } else {
-            debug!("GL download pipeline failed, falling back");
+            debug!("VAAPI + vapostproc pipeline failed");
             None
         }
     }
@@ -530,6 +652,7 @@ impl VideoPlayer {
             return None;
         }
 
+        // Test the actual pipeline with appsink
         let pipeline = format!(
             concat!(
                 "filesrc location=\"{path}\" ! ",
@@ -544,13 +667,13 @@ impl VideoPlayer {
             path = escaped_path,
         );
 
-        debug!(pipeline = %pipeline, "Trying NVDEC + GL pipeline");
+        debug!(pipeline = %pipeline, "Testing NVDEC + GL pipeline");
 
         if test_pipeline(&pipeline) {
             debug!("NVDEC pipeline verified");
             Some(pipeline)
         } else {
-            debug!("NVDEC + GL pipeline failed");
+            debug!("NVDEC + GL pipeline test failed");
             None
         }
     }
@@ -559,6 +682,7 @@ impl VideoPlayer {
         escaped_path: &str,
         test_pipeline: &impl Fn(&str) -> bool,
     ) -> Option<String> {
+        // Test the actual pipeline with appsink
         let pipeline = format!(
             concat!(
                 "filesrc location=\"{path}\" ! ",
@@ -572,13 +696,13 @@ impl VideoPlayer {
             path = escaped_path,
         );
 
-        debug!(pipeline = %pipeline, "Trying decodebin + GL pipeline");
+        debug!(pipeline = %pipeline, "Testing decodebin + GL pipeline");
 
         if test_pipeline(&pipeline) {
             debug!("Decodebin + GL pipeline verified");
             Some(pipeline)
         } else {
-            debug!("GL pipeline failed");
+            debug!("GL pipeline test failed");
             None
         }
     }
