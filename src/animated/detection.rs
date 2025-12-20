@@ -97,7 +97,10 @@ fn detect_codec_support() -> CodecSupport {
         }
     }
 
-    // Check for vapostproc (required for DMA-BUF output) - both new and old names
+    // Check for VAAPI post-processor (required for DMA-BUF zero-copy output)
+    // New GStreamer 1.22+ uses "vapostproc", older uses "vaapipostproc"
+    // Note: DMA-BUF from vapostproc only works on GStreamer 1.26+ (not 1.24)
+    // On older versions, the GL download pipeline is used instead (glupload → glcolorconvert → gldownload)
     if gstreamer::ElementFactory::find("vapostproc").is_some() {
         support.hw_decoders.push("vapostproc".to_string());
     } else if gstreamer::ElementFactory::find("vaapipostproc").is_some() {

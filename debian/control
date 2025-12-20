@@ -12,6 +12,13 @@ Build-Depends:
   mold,
   nasm,
   pkg-config,
+  cmake,
+  meson,
+  ninja-build,
+  clang,
+  libgstreamer1.0-dev,
+  libgstreamer-plugins-base1.0-dev,
+  libdav1d-dev,
 Standards-Version: 4.3.0
 Homepage: https://github.com/pop-os/cosmic-bg
 
@@ -19,5 +26,14 @@ Package: cosmic-bg
 Architecture: amd64 arm64
 Depends:
   ${misc:Depends},
-  ${shlibs:Depends}
+  ${shlibs:Depends},
+  gstreamer1.0-plugins-base,
+  gstreamer1.0-plugins-good,
+  gstreamer1.0-plugins-bad,
+Recommends:
+  gstreamer1.0-plugins-ugly,
+  gstreamer1.0-libav,
+  gstreamer1.0-vaapi,
+Suggests:
+  gst-cuda-dmabuf,
 Description: Cosmic Background

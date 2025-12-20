@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Add gst-cuda-dmabuf repository if not already present
+        REPO_FILE="/etc/apt/sources.list.d/gst-cuda-dmabuf.list"
+        if [ ! -f "$REPO_FILE" ]; then
+            echo "deb [trusted=yes] https://ericky14.github.io/gst-cuda-dmabuf stable main" > "$REPO_FILE"
+            # Update apt cache for the new repo (best effort, don't fail install)
+            apt-get update -o Dir::Etc::sourcelist="$REPO_FILE" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

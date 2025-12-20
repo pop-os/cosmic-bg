@@ -606,33 +606,17 @@ impl Wallpaper {
             }
         };
 
-        // PRE-TOUCH: Force allocation of physical pages by writing to the entire buffer.
-        // Without this, the first write to newly allocated wl_shm memory triggers
-        // page faults and kernel allocation, causing 30ms+ latency on first frame.
-        // We fill with black (0x00000000) which is fast and avoids visual glitches.
-        if canvas.len() >= 8_000_000 {
-            // Only pre-touch for large buffers (>8MB, i.e., ~2K+ resolution)
-            let touch_start = Instant::now();
-            // Fill entire buffer with zeros (black) to force page allocation
-            canvas.fill(0);
-            let touch_time = touch_start.elapsed();
-            if touch_time.as_millis() > 1 {
-                tracing::debug!(
-                    ?touch_time,
-                    buffer_size = canvas.len(),
-                    "Pre-filled wl_shm buffer"
-                );
-            }
-        }
-
         // ZERO-COPY: Pull frame directly into wl_shm buffer
         // Try to get new frame first, fall back to cached frame if none available
         let frame_info = match anim_state.player.pull_frame_to_buffer(canvas) {
             Some(info) => {
+                // Debug: Check if buffer actually has non-zero content
+                let non_zero_count = canvas.iter().take(1000).filter(|&&b| b != 0).count();
                 tracing::trace!(
                     width = info.width,
                     height = info.height,
                     is_bgrx = info.is_bgrx,
+                    non_zero_in_first_1000 = non_zero_count,
                     "Pulled new video frame"
                 );
                 info
