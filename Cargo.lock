@@ -437,6 +437,7 @@ dependencies = [
  "rand 0.10.1",
  "rayon",
  "smithay-client-toolkit",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "walkdir",
