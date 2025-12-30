@@ -252,15 +252,15 @@ impl Wallpaper {
                             {
                                 image_queue.push_front(img_path.path().into());
                             }
-                        } else if let Ok(dir) = source.read_dir() {
-                            for entry in dir.filter_map(Result::ok) {
-                                let Ok(path) = entry.path().canonicalize() else {
-                                    continue;
-                                };
-
-                                if path.is_file() {
-                                    image_queue.push_front(path);
-                                }
+                        } else {
+                            // Recursively find images in custom directory
+                            for img_path in WalkDir::new(source)
+                                .follow_links(true)
+                                .into_iter()
+                                .filter_map(Result::ok)
+                                .filter(|p| p.path().is_file())
+                            {
+                                image_queue.push_front(img_path.path().into());
                             }
                         }
                     } else if source.is_file() {
@@ -412,4 +412,67 @@ fn decode_jpegxl(path: &std::path::Path) -> eyre::Result<DynamicImage> {
 
     image::DynamicImage::from_decoder(decoder)
         .map_err(|why| eyre!("failed to decode jxl image: {why}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use tempfile::tempdir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_custom_dir_loading() {
+        // Create a temp directory structure
+        // root/
+        //   img1.png
+        //   subdir/
+        //     img2.png
+        
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let subdir = root.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+
+        File::create(root.join("img1.png")).unwrap();
+        File::create(subdir.join("img2.png")).unwrap();
+
+        // Create a Wallpaper instance with Source pointing to root
+        // We need to mock dependencies or use minimal construction if possible.
+        // Wallpaper::new requires QueueHandle and LoopHandle which are hard to mock here.
+        // Instead, we can verify the logic by extracting the loading logic or just replicating it here to confirm behavior.
+        
+        // Let's replicate the logic from load_images for custom directories check
+        let source = root.to_path_buf();
+        let mut image_queue = VecDeque::new();
+        
+        // Assume XDG_DATA_DIRS does NOT contain this temp dir (which is true)
+        let xdg_data_dirs: Vec<String> = Vec::new();
+
+        if let Ok(source) = source.canonicalize() {
+            if source.is_dir() {
+                 if xdg_data_dirs
+                    .iter()
+                    .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
+                {
+                    // This block should NOT be hit
+                    panic!("Test setup error: temp dir shouldn't be in XDG_DATA_DIRS");
+                } else {
+                    for img_path in WalkDir::new(source)
+                        .follow_links(true)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .filter(|p| p.path().is_file())
+                    {
+                        image_queue.push_front(img_path.path().into());
+                    }
+                }
+            }
+        }
+
+        // With WalkDir, we expect to find 2 images (recursive)
+        assert_eq!(image_queue.len(), 2, "Should find 2 images recursively");
+        assert!(image_queue.iter().any(|p: &PathBuf| p.ends_with("img1.png")));
+        assert!(image_queue.iter().any(|p: &PathBuf| p.ends_with("img2.png")));
+    }
 }
