@@ -1,0 +1,1357 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! GStreamer-based hardware-accelerated video player.
+//!
+//! This module provides [`VideoPlayer`], which uses GStreamer for efficient
+//! video decoding with support for:
+//! - NVIDIA NVDEC (with optional cudadmabufupload for zero-copy)
+//! - AMD/Intel VAAPI
+//! - Software decode fallback
+//!
+//! ## Pipeline Priority
+//!
+//! 1. NVIDIA CUDA→DMA-BUF (optimal zero-copy)
+//! 2. VAAPI DMA-BUF (AMD/Intel, requires GStreamer 1.26+)
+//! 3. NVIDIA GL DMA-BUF
+//! 4. GL download (decodebin → glupload → glcolorconvert → gldownload) - works with any decoder
+//! 5. VAAPI wl_shm (decodebin → vapostproc → appsink) - reliable fallback for VAAPI
+//! 6. NVIDIA GL wl_shm fallback
+//! 7. Software decode
+
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use image::DynamicImage;
+use tracing::{debug, error, info, warn};
+
+use super::types::{AnimatedFrame, DEFAULT_FRAME_DURATION, MIN_FRAME_DURATION, VideoFrameInfo};
+
+/// Shared state for receiving frames from GStreamer pipeline.
+pub(crate) struct VideoFrameState {
+    /// Most recent decoded frame.
+    #[allow(dead_code)]
+    pub current_frame: Option<AnimatedFrame>,
+    /// Frame duration from video metadata.
+    pub frame_duration: Duration,
+    /// Whether video has reached end of stream.
+    pub eos: bool,
+    /// Frame counter for FPS measurement.
+    pub frame_count: u64,
+}
+
+/// Hardware-accelerated video player using GStreamer.
+///
+/// ## Architecture: Decoupled Frame Delivery
+///
+/// This player uses a decoupled architecture to prevent rendering stalls:
+///
+/// ```text
+/// GStreamer (async) → FrameQueue (3 frames) → Renderer (non-blocking)
+/// ```
+///
+/// Key design principles:
+/// - **GStreamer callback never blocks**: Pushes to queue, drops oldest if full
+/// - **Renderer never waits**: Pops from queue, reuses last frame if empty
+/// - **appsink bounded buffering**: `max-buffers=4, drop=true` prevents pipeline stalls
+/// - **Seek-based looping**: Seeks to start on EOS for seamless loop
+pub struct VideoPlayer {
+    /// GStreamer pipeline.
+    pipeline: gstreamer::Pipeline,
+    /// App sink for receiving frames.
+    appsink: gstreamer_app::AppSink,
+    /// Bounded frame queue for decoupled rendering.
+    frame_queue: crate::frame_queue::SharedFrameQueue,
+    /// Shared frame state (legacy, used for frame_duration).
+    pub(crate) frame_state: Arc<Mutex<VideoFrameState>>,
+    /// Source file path.
+    source_path: PathBuf,
+    /// Whether to loop playback.
+    looping: bool,
+    /// Number of times the pipeline has been rebuilt (for EOS looping).
+    rebuild_count: std::sync::atomic::AtomicU32,
+}
+
+impl VideoPlayer {
+    /// Log available hardware video decoders for debugging.
+    fn log_available_decoders() {
+        // Use the detection module which caches the result
+        let support = super::get_codec_support();
+
+        if support.hw_decoders.is_empty() {
+            warn!(
+                "No hardware video decoders found. Video will use software decoding. \
+                 Install gstreamer1-vaapi (AMD/Intel) or gstreamer1-plugins-bad (NVIDIA) for hardware acceleration."
+            );
+        } else {
+            info!(decoders = ?support.hw_decoders, "Available hardware video decoders");
+        }
+    }
+
+    /// Create a new video player for the given path.
+    pub fn new(path: &Path, target_width: u32, target_height: u32) -> eyre::Result<Self> {
+        use gstreamer::prelude::*;
+
+        gstreamer::init()?;
+
+        // Demote NVIDIA decoders if they can't actually be instantiated
+        // (e.g., on AMD-only systems where CUDA isn't available)
+        super::demote_broken_nvidia_decoders();
+
+        static LOGGED_DECODERS: std::sync::Once = std::sync::Once::new();
+        LOGGED_DECODERS.call_once(Self::log_available_decoders);
+
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid path: {}", path.display()))?;
+
+        debug!(
+            path = %path.display(),
+            width = target_width,
+            height = target_height,
+            "Creating GStreamer video player with GPU scaling"
+        );
+
+        let test_pipeline = |pipeline_str: &str| -> bool {
+            match gstreamer::parse::launch(pipeline_str) {
+                Ok(p) => {
+                    let result = p.set_state(gstreamer::State::Paused);
+                    if result.is_err() {
+                        debug!("Pipeline test failed: set_state returned error");
+                        let _ = p.set_state(gstreamer::State::Null);
+                        return false;
+                    }
+
+                    // Check for errors on bus while waiting
+                    let bus = p.bus().unwrap();
+
+                    // Use longer timeout (5s) for GL pipelines which need EGL/GPU init
+                    let start = std::time::Instant::now();
+
+                    loop {
+                        // Check pipeline state
+                        let (res, state, pending) =
+                            p.state(gstreamer::ClockTime::from_mseconds(100));
+
+                        if res.is_ok() && state == gstreamer::State::Paused {
+                            let _ = p.set_state(gstreamer::State::Null);
+                            return true;
+                        }
+
+                        // Check for errors on bus
+                        while let Some(msg) = bus.pop() {
+                            use gstreamer::MessageView;
+                            match msg.view() {
+                                MessageView::Error(err) => {
+                                    debug!(
+                                        error = %err.error(),
+                                        debug = ?err.debug(),
+                                        "Pipeline test failed: GStreamer error"
+                                    );
+                                    let _ = p.set_state(gstreamer::State::Null);
+                                    return false;
+                                }
+                                MessageView::StateChanged(state_changed) => {
+                                    if let Some(src) = state_changed.src() {
+                                        if src.type_() == gstreamer::Pipeline::static_type() {
+                                            debug!(
+                                                old = ?state_changed.old(),
+                                                new = ?state_changed.current(),
+                                                "Pipeline state changed during test"
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Check timeout
+                        if start.elapsed() > std::time::Duration::from_secs(5) {
+                            debug!(
+                                result = ?res,
+                                state = ?state,
+                                pending = ?pending,
+                                elapsed_ms = start.elapsed().as_millis(),
+                                "Pipeline test timed out"
+                            );
+                            let _ = p.set_state(gstreamer::State::Null);
+                            return false;
+                        }
+
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+                Err(e) => {
+                    debug!(error = %e, "Pipeline test failed: parse error");
+                    false
+                }
+            }
+        };
+
+        let escaped_path = path_str.replace('\\', "\\\\").replace('"', "\\\"");
+
+        // Check for VAAPI post-processor (vapostproc) - only needed for DMA-BUF path
+        // Note: Only vapostproc (new, GStreamer 1.22+) supports DMA-BUF output
+        // The GL download pipeline doesn't need it - decodebin handles decoder selection
+        let has_vapostproc = gstreamer::ElementFactory::find("vapostproc").is_some();
+        let has_nvdec = gstreamer::ElementFactory::find("nvh264dec").is_some();
+        let has_cuda_dmabuf = gstreamer::ElementFactory::find("cudadmabufupload").is_some();
+
+        debug!(
+            has_vapostproc,
+            has_nvdec, has_cuda_dmabuf, "Hardware acceleration support detected"
+        );
+
+        if has_cuda_dmabuf {
+            info!(
+                "NVIDIA CUDA→DMA-BUF plugin (cudadmabufupload) detected - optimal zero-copy path available"
+            );
+        }
+
+        // Allow disabling DMA-BUF via environment variable for debugging/compatibility
+        // Set COSMIC_BG_NO_DMABUF=1 to force shared memory path
+        let try_dmabuf = std::env::var("COSMIC_BG_NO_DMABUF")
+            .map(|v| v != "1" && v.to_lowercase() != "true")
+            .unwrap_or(true);
+
+        if !try_dmabuf {
+            info!("DMA-BUF disabled via COSMIC_BG_NO_DMABUF environment variable");
+        }
+
+        // Try pipelines in priority order
+        let pipeline_str = Self::try_cuda_dmabuf_pipeline(
+            path,
+            &escaped_path,
+            has_cuda_dmabuf,
+            has_nvdec,
+            try_dmabuf,
+            &test_pipeline,
+            target_width,
+            target_height,
+        )
+        .or_else(|| {
+            // VAAPI DMA-BUF only works with vapostproc (new element), not vaapipostproc
+            Self::try_vaapi_dmabuf_pipeline(
+                path,
+                &escaped_path,
+                has_vapostproc, // Only try if we have the NEW vapostproc
+                try_dmabuf,
+                &test_pipeline,
+                target_width,
+                target_height,
+            )
+        })
+        .or_else(|| {
+            Self::try_nvdec_gl_dmabuf_pipeline(
+                &escaped_path,
+                has_nvdec,
+                try_dmabuf,
+                &test_pipeline,
+                target_width,
+                target_height,
+            )
+        })
+        .or_else(|| {
+            Self::try_gl_download_pipeline(
+                &escaped_path,
+                &test_pipeline,
+                target_width,
+                target_height,
+            )
+        })
+        .or_else(|| {
+            Self::try_vaapi_wlshm_pipeline(
+                &escaped_path,
+                has_vapostproc,
+                &test_pipeline,
+                target_width,
+                target_height,
+            )
+        })
+        .or_else(|| Self::try_nvdec_gl_wlshm_pipeline(&escaped_path, has_nvdec, &test_pipeline))
+        .or_else(|| Self::try_gl_pipeline(&escaped_path, &test_pipeline))
+        .unwrap_or_else(|| {
+            Self::software_fallback_pipeline(&escaped_path, target_width, target_height)
+        });
+
+        debug!(pipeline = %pipeline_str, "Creating GStreamer pipeline");
+
+        let pipeline = gstreamer::parse::launch(&pipeline_str)?
+            .downcast::<gstreamer::Pipeline>()
+            .map_err(|_| eyre::eyre!("Failed to create pipeline"))?;
+
+        let appsink = pipeline
+            .by_name("sink")
+            .ok_or_else(|| eyre::eyre!("Failed to get appsink from pipeline"))?
+            .downcast::<gstreamer_app::AppSink>()
+            .map_err(|_| eyre::eyre!("Element 'sink' is not an AppSink"))?;
+
+        let frame_state = Arc::new(Mutex::new(VideoFrameState {
+            current_frame: None,
+            frame_duration: DEFAULT_FRAME_DURATION,
+            eos: false,
+            frame_count: 0,
+        }));
+
+        let frame_queue = crate::frame_queue::new_shared_queue(3);
+
+        // IMPORTANT: Set up callbacks BEFORE detect_framerate sets pipeline to PAUSED
+        // This ensures our propose_allocation callback (which adds VideoMeta support)
+        // is active when caps negotiation happens for VAAPI DMA-BUF
+        Self::setup_appsink_callback(&appsink, Arc::clone(&frame_queue), Arc::clone(&frame_state));
+
+        // Now detect framerate - this sets pipeline to PAUSED and triggers caps negotiation
+        let initial_frame_duration =
+            Self::detect_framerate(&pipeline, &appsink, target_width, target_height);
+
+        // Update frame_state with detected duration
+        if let Ok(mut state) = frame_state.lock() {
+            state.frame_duration = initial_frame_duration;
+        }
+
+        Ok(Self {
+            pipeline,
+            appsink,
+            frame_queue,
+            frame_state,
+            source_path: path.to_path_buf(),
+            looping: true,
+            rebuild_count: std::sync::atomic::AtomicU32::new(0),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_cuda_dmabuf_pipeline(
+        path: &Path,
+        escaped_path: &str,
+        has_cuda_dmabuf: bool,
+        has_nvdec: bool,
+        try_dmabuf: bool,
+        test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        if !try_dmabuf || !has_cuda_dmabuf || !has_nvdec {
+            return None;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        let pipeline = match ext.as_str() {
+            "mp4" | "m4v" | "mov" => format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "qtdemux ! h264parse ! ",
+                    "nvh264dec ! ",
+                    "video/x-raw(memory:CUDAMemory) ! ",
+                    "cudadmabufupload ! ",
+                    "video/x-raw(memory:DMABuf) ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            ),
+            "webm" => format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "matroskademux ! ",
+                    "nvvp9dec ! ",
+                    "video/x-raw(memory:CUDAMemory) ! ",
+                    "cudadmabufupload ! ",
+                    "video/x-raw(memory:DMABuf) ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            ),
+            "mkv" => format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "matroskademux ! h264parse ! ",
+                    "nvh264dec ! ",
+                    "video/x-raw(memory:CUDAMemory) ! ",
+                    "cudadmabufupload ! ",
+                    "video/x-raw(memory:DMABuf) ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            ),
+            _ => format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "decodebin ! ",
+                    "video/x-raw(memory:CUDAMemory) ! ",
+                    "cudadmabufupload ! ",
+                    "video/x-raw(memory:DMABuf) ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            ),
+        };
+
+        debug!(pipeline = %pipeline, "Trying NVIDIA CUDA→DMA-BUF zero-copy pipeline");
+
+        if test_pipeline(&pipeline) {
+            info!(
+                "🚀 NVIDIA CUDA→DMA-BUF zero-copy pipeline ACTIVE - maximum performance ({}x{})",
+                target_width, target_height
+            );
+            Some(pipeline)
+        } else {
+            debug!("CUDA→DMA-BUF pipeline failed");
+            None
+        }
+    }
+
+    /// Try VAAPI DMA-BUF pipeline. Only works with GStreamer 1.26+ where
+    /// vapostproc properly supports DMA-BUF export.
+    ///
+    /// IMPORTANT: We require GStreamer 1.26+ because:
+    /// - GStreamer 1.24 (Pop!_OS): DMA-BUF export from vapostproc causes GPU hangs
+    /// - GStreamer 1.26 (Fedora 42): DMA-BUF export works correctly
+    ///
+    /// We don't test the pipeline because the test itself can cause hangs on 1.24.
+    /// Instead, we trust that 1.26+ works (which it does on Fedora 42).
+    fn try_vaapi_dmabuf_pipeline(
+        path: &Path,
+        escaped_path: &str,
+        has_vapostproc: bool,
+        try_dmabuf: bool,
+        _test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        if !try_dmabuf || !has_vapostproc {
+            return None;
+        }
+
+        // Check GStreamer version - VAAPI DMA-BUF only works reliably on 1.26+
+        // GStreamer 1.24 (Pop!_OS 22.04) has bugs that cause GPU hangs with DMA-BUF
+        let gst_version = gstreamer::version();
+        let (major, minor) = (gst_version.0, gst_version.1);
+
+        if major < 1 || (major == 1 && minor < 26) {
+            debug!(
+                gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
+                "Skipping VAAPI DMA-BUF - requires GStreamer 1.26+ (current has bugs with DMA-BUF export)"
+            );
+            return None;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        // Check which VAAPI decoders are available (supports both old "vaapi*" and new "va*" names)
+        let has_vaapi_h264 = gstreamer::ElementFactory::find("vaapih264dec").is_some()
+            || gstreamer::ElementFactory::find("vah264dec").is_some();
+        let has_vaapi_h265 = gstreamer::ElementFactory::find("vaapih265dec").is_some()
+            || gstreamer::ElementFactory::find("vah265dec").is_some();
+        let has_vaapi_vp9 = gstreamer::ElementFactory::find("vaapivp9dec").is_some()
+            || gstreamer::ElementFactory::find("vavp9dec").is_some();
+        let has_vaapi_av1 = gstreamer::ElementFactory::find("vaapiav1dec").is_some()
+            || gstreamer::ElementFactory::find("vaav1dec").is_some();
+
+        debug!(
+            ext = %ext,
+            has_vaapi_h264,
+            has_vaapi_h265,
+            has_vaapi_vp9,
+            has_vaapi_av1,
+            gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
+            "VAAPI decoder availability check"
+        );
+
+        // Only use VAAPI pipeline if we have the appropriate decoder
+        // MP4/MOV typically contain H.264/H.265, WebM contains VP8/VP9/AV1
+        let can_use_vaapi = match ext.as_str() {
+            "webm" => has_vaapi_vp9 || has_vaapi_av1,
+            "mp4" | "m4v" | "mov" => has_vaapi_h264 || has_vaapi_h265,
+            "mkv" => has_vaapi_h264 || has_vaapi_h265 || has_vaapi_vp9 || has_vaapi_av1,
+            _ => false,
+        };
+
+        if !can_use_vaapi {
+            debug!(
+                ext = %ext,
+                has_vaapi_h264,
+                has_vaapi_vp9,
+                "Skipping VAAPI pipeline - no decoder for container format"
+            );
+            return None;
+        }
+
+        // For GStreamer 1.26+, we trust that VAAPI DMA-BUF works.
+        // We DON'T test the pipeline because even the test can cause GPU hangs on some systems.
+        // The real appsink's propose_allocation callback adds VideoMeta support required for DMA-BUF.
+        let pipeline_str = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin ! ",
+                "vapostproc ! ",
+                "video/x-raw(memory:DMABuf),format=DMA_DRM ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        info!(
+            gstreamer_version = format!("{}.{}.{}", major, minor, gst_version.2),
+            "🚀 VAAPI DMA-BUF zero-copy pipeline ACTIVE ({}x{})", target_width, target_height
+        );
+        debug!(pipeline = %pipeline_str, "VAAPI DMA-BUF pipeline");
+
+        Some(pipeline_str)
+    }
+
+    fn try_nvdec_gl_dmabuf_pipeline(
+        escaped_path: &str,
+        has_nvdec: bool,
+        try_dmabuf: bool,
+        test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        if !try_dmabuf || !has_nvdec {
+            return None;
+        }
+
+        let pipeline = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin name=dec ! ",
+                "nvh264dec ! ",
+                "glcolorconvert ! ",
+                "video/x-raw(memory:GLMemory),format=RGBA ! ",
+                "gldownload ! ",
+                "video/x-raw(memory:DMABuf),format=RGBA ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Trying NVIDIA NVDEC GL DMA-BUF zero-copy pipeline");
+
+        if test_pipeline(&pipeline) {
+            info!(
+                "NVIDIA NVDEC GL DMA-BUF zero-copy pipeline active ({}x{})",
+                target_width, target_height
+            );
+            Some(pipeline)
+        } else {
+            debug!("NVDEC GL DMA-BUF pipeline failed");
+            None
+        }
+    }
+
+    /// Try GL download pipeline for efficient GPU→CPU transfer.
+    ///
+    /// This pipeline uses decodebin (auto-selects best decoder - VAAPI, NVDEC, or software)
+    /// then uploads to GL, converts format on GPU, and downloads back to system memory.
+    /// gldownload uses DMA/PBO optimizations which is much faster than videoconvert.
+    ///
+    /// Pipeline: decodebin → glupload → glcolorconvert (GPU) → gldownload → appsink
+    fn try_gl_download_pipeline(
+        escaped_path: &str,
+        test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        // Check for GL elements
+        let has_glupload = gstreamer::ElementFactory::find("glupload").is_some();
+        let has_gldownload = gstreamer::ElementFactory::find("gldownload").is_some();
+        let has_glcolorconvert = gstreamer::ElementFactory::find("glcolorconvert").is_some();
+
+        if !has_glupload || !has_gldownload || !has_glcolorconvert {
+            debug!(
+                has_glupload,
+                has_gldownload, has_glcolorconvert, "Missing GL elements for GL download pipeline"
+            );
+            return None;
+        }
+
+        // Test the actual pipeline with appsink - fakesink may negotiate differently
+        let pipeline = format!(
+            "filesrc location=\"{path}\" ! \
+             decodebin name=dec ! \
+             glupload ! \
+             glcolorconvert ! video/x-raw(memory:GLMemory),format=BGRx ! \
+             gldownload ! \
+             video/x-raw,format=BGRx ! \
+             videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! \
+             appsink name=sink sync=true max-buffers=4 drop=true",
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Testing GL download pipeline");
+
+        if !test_pipeline(&pipeline) {
+            debug!("GL download pipeline test failed, falling back");
+            return None;
+        }
+
+        info!(
+            "GL download pipeline active - GPU color conversion with PBO transfer ({}x{})",
+            target_width, target_height
+        );
+        Some(pipeline)
+    }
+
+    /// Try VAAPI wl_shm pipeline using vapostproc for format conversion.
+    /// This is the reliable fallback for VAAPI systems when GL/DMA-BUF pipelines fail.
+    fn try_vaapi_wlshm_pipeline(
+        escaped_path: &str,
+        has_vapostproc: bool,
+        test_pipeline: &impl Fn(&str) -> bool,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<String> {
+        if !has_vapostproc {
+            return None;
+        }
+
+        let pipeline = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin name=dec ! ",
+                "videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! ",
+                "vapostproc ! ",
+                "video/x-raw,format=BGRx ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Trying VAAPI + vapostproc pipeline");
+
+        if test_pipeline(&pipeline) {
+            info!(
+                "VAAPI wl_shm pipeline active - hardware decode with vapostproc ({}x{})",
+                target_width, target_height
+            );
+            Some(pipeline)
+        } else {
+            debug!("VAAPI + vapostproc pipeline failed");
+            None
+        }
+    }
+
+    fn try_nvdec_gl_wlshm_pipeline(
+        escaped_path: &str,
+        has_nvdec: bool,
+        test_pipeline: &impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        if !has_nvdec {
+            return None;
+        }
+
+        // Test the actual pipeline with appsink
+        let pipeline = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin name=dec ! ",
+                "videoconvert ! ",
+                "videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! ",
+                "glupload ! ",
+                "glcolorconvert ! video/x-raw(memory:GLMemory),format=BGRx ! ",
+                "gldownload ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Testing NVDEC + GL pipeline");
+
+        if test_pipeline(&pipeline) {
+            debug!("NVDEC pipeline verified");
+            Some(pipeline)
+        } else {
+            debug!("NVDEC + GL pipeline test failed");
+            None
+        }
+    }
+
+    fn try_gl_pipeline(
+        escaped_path: &str,
+        test_pipeline: &impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        // Test the actual pipeline with appsink
+        let pipeline = format!(
+            concat!(
+                "filesrc location=\"{path}\" ! ",
+                "decodebin name=dec ! ",
+                "videorate drop-only=true max-rate=60 ! video/x-raw,framerate=60/1 ! ",
+                "glupload ! ",
+                "glcolorconvert ! video/x-raw(memory:GLMemory),format=BGRx ! ",
+                "gldownload ! ",
+                "appsink name=sink sync=true max-buffers=4 drop=true"
+            ),
+            path = escaped_path,
+        );
+
+        debug!(pipeline = %pipeline, "Testing decodebin + GL pipeline");
+
+        if test_pipeline(&pipeline) {
+            debug!("Decodebin + GL pipeline verified");
+            Some(pipeline)
+        } else {
+            debug!("GL pipeline test failed");
+            None
+        }
+    }
+
+    fn software_fallback_pipeline(
+        escaped_path: &str,
+        target_width: u32,
+        target_height: u32,
+    ) -> String {
+        // Check if openh264dec is available for explicit H.264 software decode
+        let has_openh264 = gstreamer::ElementFactory::find("openh264dec").is_some();
+
+        // For software fallback, we want to avoid hardware decoders that might
+        // be registered but not functional (e.g., nvh264dec on AMD-only systems).
+        // If openh264 is available, prefer that for H.264 content.
+        let pipeline = if has_openh264 {
+            // Use decodebin3 which has better fallback behavior, with decoder hints
+            format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "decodebin3 ! ",
+                    "videoconvert ! ",
+                    "video/x-raw,format=BGRx ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            )
+        } else {
+            format!(
+                concat!(
+                    "filesrc location=\"{path}\" ! ",
+                    "decodebin ! ",
+                    "videoconvert ! ",
+                    "video/x-raw,format=BGRx ! ",
+                    "appsink name=sink sync=true max-buffers=4 drop=true"
+                ),
+                path = escaped_path,
+            )
+        };
+
+        debug!(
+            pipeline = %pipeline,
+            has_openh264,
+            "Using software decodebin fallback ({}x{})",
+            target_width, target_height
+        );
+        pipeline
+    }
+
+    fn detect_framerate(
+        pipeline: &gstreamer::Pipeline,
+        appsink: &gstreamer_app::AppSink,
+        target_width: u32,
+        target_height: u32,
+    ) -> Duration {
+        use gstreamer::prelude::*;
+
+        debug!("Setting pipeline to PAUSED to detect framerate");
+
+        if pipeline.set_state(gstreamer::State::Paused).is_err() {
+            debug!("Failed to set pipeline to PAUSED");
+            return DEFAULT_FRAME_DURATION;
+        }
+
+        let (result, _, _) = pipeline.state(gstreamer::ClockTime::from_mseconds(500));
+        if result.is_err() {
+            debug!("Pipeline failed to reach PAUSED state");
+            return DEFAULT_FRAME_DURATION;
+        }
+
+        debug!("Pipeline reached PAUSED state, querying caps");
+
+        let Some(pad) = appsink.static_pad("sink") else {
+            debug!("No sink pad on appsink");
+            return DEFAULT_FRAME_DURATION;
+        };
+
+        let Some(caps) = pad.current_caps() else {
+            debug!("No current caps on pad");
+            return DEFAULT_FRAME_DURATION;
+        };
+
+        debug!(caps = %caps, "Got current caps from pad");
+
+        let Some(structure) = caps.structure(0) else {
+            debug!("No structure in caps");
+            return DEFAULT_FRAME_DURATION;
+        };
+
+        // Log video resolution
+        if let (Some(w), Some(h)) = (
+            structure.get::<i32>("width").ok(),
+            structure.get::<i32>("height").ok(),
+        ) {
+            info!(
+                target_resolution = format!("{}x{}", target_width, target_height),
+                pipeline_resolution = format!("{}x{}", w, h),
+                "Video resolution configuration"
+            );
+        }
+
+        if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
+            if framerate.numer() > 0 && framerate.denom() > 0 {
+                let detected_duration = Duration::from_secs_f64(
+                    f64::from(framerate.denom()) / f64::from(framerate.numer()),
+                );
+                info!(
+                    fps = format!("{}/{}", framerate.numer(), framerate.denom()),
+                    duration_ms = detected_duration.as_millis(),
+                    "Detected video framerate"
+                );
+                return detected_duration.max(MIN_FRAME_DURATION);
+            }
+        }
+
+        debug!("No framerate field in caps");
+        DEFAULT_FRAME_DURATION
+    }
+
+    fn setup_appsink_callback(
+        appsink: &gstreamer_app::AppSink,
+        frame_queue: crate::frame_queue::SharedFrameQueue,
+        frame_state: Arc<Mutex<VideoFrameState>>,
+    ) {
+        appsink.set_callbacks(
+            gstreamer_app::AppSinkCallbacks::builder()
+                .new_sample(move |appsink| Self::handle_sample(appsink, &frame_queue, &frame_state))
+                .propose_allocation(|_appsink, query| {
+                    // Add VideoMeta support to enable DMA-BUF output from VAAPI.
+                    // vapostproc requires downstream to support VideoMeta for DMA-BUF caps.
+                    query.add_allocation_meta::<gstreamer_video::VideoMeta>(None);
+                    debug!("Added VideoMeta to allocation query for DMA-BUF support");
+                    true
+                })
+                .build(),
+        );
+    }
+
+    fn handle_sample(
+        appsink: &gstreamer_app::AppSink,
+        frame_queue: &crate::frame_queue::SharedFrameQueue,
+        frame_state: &Arc<Mutex<VideoFrameState>>,
+    ) -> Result<gstreamer::FlowSuccess, gstreamer::FlowError> {
+        tracing::debug!("handle_sample callback triggered");
+
+        // Check if we're shutting down - return early to avoid blocking
+        if frame_queue.is_stopped() {
+            tracing::debug!("Frame queue is stopped, returning EOS");
+            return Err(gstreamer::FlowError::Eos);
+        }
+
+        let sample = match appsink.pull_sample() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Callback pull_sample failed: {:?}", e);
+                return Ok(gstreamer::FlowSuccess::Ok);
+            }
+        };
+        tracing::debug!("Got sample from appsink");
+
+        let Some(buffer) = sample.buffer() else {
+            tracing::debug!("Sample has no buffer");
+            return Ok(gstreamer::FlowSuccess::Ok);
+        };
+        tracing::debug!(size = buffer.size(), "Got buffer from sample");
+
+        let pts_ns = buffer.pts().map(|p| p.nseconds());
+
+        let Some(caps) = sample.caps() else {
+            tracing::trace!("Sample has no caps");
+            return Ok(gstreamer::FlowSuccess::Ok);
+        };
+
+        let Ok(video_info) = gstreamer_video::VideoInfo::from_caps(caps) else {
+            tracing::trace!("Failed to get VideoInfo from caps");
+            return Ok(gstreamer::FlowSuccess::Ok);
+        };
+
+        let width = video_info.width();
+        let height = video_info.height();
+        tracing::trace!(width, height, "Got video info");
+
+        // Check for DMA-BUF memory first (zero-copy path)
+        let frame = if buffer.n_memory() > 0 {
+            let mem = buffer.memory(0).unwrap();
+
+            if let Some(dmabuf_mem) =
+                mem.downcast_memory_ref::<gstreamer_allocators::DmaBufMemory>()
+            {
+                tracing::trace!("Frame is DMA-BUF");
+                Self::create_dmabuf_frame(&sample, buffer, dmabuf_mem, caps, width, height, pts_ns)
+            } else {
+                tracing::trace!("Frame is NOT DMA-BUF, will map readable");
+                None
+            }
+        } else {
+            tracing::trace!("Buffer has no memory blocks");
+            None
+        };
+
+        let frame = match frame {
+            Some(f) => f,
+            None => {
+                // Fallback: Map buffer and copy
+                tracing::trace!("Attempting to map buffer readable");
+                if let Ok(map) = buffer.map_readable() {
+                    tracing::trace!(
+                        data_len = map.as_slice().len(),
+                        "Mapped buffer, creating frame"
+                    );
+                    crate::frame_queue::QueuedFrame::new(
+                        map.as_slice().to_vec(),
+                        width,
+                        height,
+                        pts_ns,
+                    )
+                } else {
+                    tracing::trace!("Skipped frame: buffer map blocked");
+                    return Ok(gstreamer::FlowSuccess::Ok);
+                }
+            }
+        };
+
+        tracing::trace!(width, height, "Pushing frame to queue");
+        if !frame_queue.push(frame) {
+            tracing::trace!("Frame push failed (queue full or stopped)");
+            return Ok(gstreamer::FlowSuccess::Ok);
+        }
+
+        if let Ok(mut state) = frame_state.try_lock() {
+            state.frame_count += 1;
+            // Log every frame for debugging
+            if state.frame_count <= 5 || state.frame_count % 60 == 0 {
+                let stats = frame_queue.stats();
+                tracing::debug!(
+                    frames = state.frame_count,
+                    queue_len = frame_queue.len(),
+                    pushed = stats.frames_pushed,
+                    popped = stats.frames_popped,
+                    dropped = stats.frames_dropped_full,
+                    reused = stats.frames_reused,
+                    "Video playback progress"
+                );
+            }
+        }
+
+        Ok(gstreamer::FlowSuccess::Ok)
+    }
+
+    fn create_dmabuf_frame(
+        _sample: &gstreamer::Sample,
+        buffer: &gstreamer::BufferRef,
+        dmabuf_mem: &gstreamer_allocators::DmaBufMemoryRef,
+        caps: &gstreamer::CapsRef,
+        width: u32,
+        height: u32,
+        pts_ns: Option<u64>,
+    ) -> Option<crate::frame_queue::QueuedFrame> {
+        let fd = dmabuf_mem.fd();
+        let video_meta = buffer.meta::<gstreamer_video::VideoMeta>();
+
+        let format_str = caps
+            .structure(0)
+            .and_then(|s| s.get::<String>("drm-format").ok())
+            .or_else(|| {
+                caps.structure(0)
+                    .and_then(|s| s.get::<String>("format").ok())
+            })
+            .unwrap_or_else(|| "NV12".to_string());
+
+        let dmabuf_format = crate::dmabuf::DmaBufFormat::from_gst_format(&format_str);
+        let is_nv12 = format_str.starts_with("NV12")
+            || dmabuf_format.fourcc == drm_fourcc::DrmFourcc::Nv12 as u32;
+
+        let (strides, offsets) = if let Some(meta) = &video_meta {
+            let s: Vec<u32> = meta.stride().iter().map(|&x| x as u32).collect();
+            let o: Vec<u32> = meta.offset().iter().map(|&x| x as u32).collect();
+            tracing::debug!(strides = ?s, offsets = ?o, "VideoMeta plane info");
+            (s, o)
+        } else {
+            let aligned_width = (width + 63) & !63;
+            let y_size = aligned_width * height;
+            if is_nv12 {
+                (vec![aligned_width, aligned_width], vec![0, y_size])
+            } else {
+                (vec![aligned_width * 4], vec![0])
+            }
+        };
+
+        tracing::debug!(
+            fd = fd,
+            format = %format_str,
+            ?strides,
+            ?offsets,
+            "Zero-copy DMA-BUF frame"
+        );
+
+        let dmabuf_result = if is_nv12 && strides.len() >= 2 && offsets.len() >= 2 {
+            crate::frame_queue::DmaBufFrameData::from_raw_fd_nv12_with_offsets(
+                fd,
+                dmabuf_format.fourcc,
+                dmabuf_format.modifier,
+                width,
+                height,
+                strides[0],
+                strides[1],
+                offsets[0],
+                offsets[1],
+            )
+        } else if is_nv12 {
+            crate::frame_queue::DmaBufFrameData::from_raw_fd_nv12(
+                fd,
+                dmabuf_format.fourcc,
+                dmabuf_format.modifier,
+                width,
+                height,
+                strides.first().copied().unwrap_or(width),
+            )
+        } else {
+            crate::frame_queue::DmaBufFrameData::from_raw_fd(
+                fd,
+                dmabuf_format.fourcc,
+                dmabuf_format.modifier,
+                strides.first().copied().unwrap_or(width * 4),
+            )
+        };
+
+        match dmabuf_result {
+            Ok(mut dmabuf_data) => {
+                dmabuf_data.width = width;
+                dmabuf_data.height = height;
+                Some(crate::frame_queue::QueuedFrame::new_dmabuf(
+                    dmabuf_data,
+                    width,
+                    height,
+                    pts_ns,
+                ))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to dup DMA-BUF fd");
+                None
+            }
+        }
+    }
+
+    /// Pull the next available frame from the pipeline (non-blocking).
+    #[allow(dead_code)]
+    pub fn pull_frame(&self) -> Option<AnimatedFrame> {
+        match self
+            .appsink
+            .try_pull_sample(gstreamer::ClockTime::from_mseconds(17))
+        {
+            Some(sample) => {
+                debug!("Successfully pulled sample from appsink");
+                self.process_sample(&sample)
+            }
+            None => None,
+        }
+    }
+
+    /// Pull a frame and write it directly to a destination buffer.
+    pub fn pull_frame_to_buffer(&self, dest: &mut [u8]) -> Option<VideoFrameInfo> {
+        let stats = self.frame_queue.stats();
+        tracing::trace!(
+            queue_len = self.frame_queue.len(),
+            pushed = stats.frames_pushed,
+            popped = stats.frames_popped,
+            "Attempting to pull frame"
+        );
+
+        if let Some((width, height)) = self.frame_queue.write_frame_to(dest) {
+            tracing::trace!(width, height, "Frame written to buffer");
+            return Some(VideoFrameInfo {
+                width,
+                height,
+                is_bgrx: true,
+            });
+        }
+        tracing::trace!("No frame available from queue");
+        None
+    }
+
+    #[allow(dead_code)]
+    fn process_sample(&self, sample: &gstreamer::Sample) -> Option<AnimatedFrame> {
+        let buffer = sample.buffer()?;
+        let caps = sample.caps()?;
+        let video_info = gstreamer_video::VideoInfo::from_caps(caps).ok()?;
+
+        let width = video_info.width();
+        let height = video_info.height();
+
+        let fps = video_info.fps();
+        let frame_duration = if fps.numer() > 0 && fps.denom() > 0 {
+            Duration::from_secs_f64(f64::from(fps.denom()) / f64::from(fps.numer()))
+        } else {
+            DEFAULT_FRAME_DURATION
+        };
+
+        let pts = buffer.pts().map(|p| p.nseconds());
+        let map = buffer.map_readable().ok()?;
+        let data = map.as_slice();
+
+        let expected_size = (width * height * 4) as usize;
+        if data.len() < expected_size {
+            error!(
+                data_len = data.len(),
+                expected = expected_size,
+                "Buffer size mismatch"
+            );
+            return None;
+        }
+
+        let image_buffer =
+            image::RgbaImage::from_raw(width, height, data[..expected_size].to_vec())?;
+        let image = DynamicImage::ImageRgba8(image_buffer);
+
+        let frame = AnimatedFrame {
+            image,
+            duration: frame_duration.max(MIN_FRAME_DURATION),
+            pts,
+        };
+
+        if let Ok(mut state) = self.frame_state.lock() {
+            state.current_frame = Some(frame.clone());
+            state.frame_duration = frame_duration;
+        }
+
+        Some(frame)
+    }
+
+    /// Start video playback.
+    pub fn play(&self) -> eyre::Result<()> {
+        use gstreamer::prelude::*;
+        self.pipeline
+            .set_state(gstreamer::State::Playing)
+            .map_err(|e| eyre::eyre!("Failed to start pipeline: {:?}", e))?;
+        Ok(())
+    }
+
+    /// Stop video playback.
+    ///
+    /// This performs a non-blocking stop to avoid system freezes when
+    /// CUDA/GPU operations are in progress. The state change is initiated
+    /// but not waited on synchronously.
+    pub fn stop(&self) -> eyre::Result<()> {
+        use gstreamer::prelude::*;
+
+        // Stop accepting new frames first
+        self.frame_queue.stop();
+
+        // Set EOS flag to stop any pending callbacks
+        if let Ok(mut state) = self.frame_state.lock() {
+            state.eos = true;
+        }
+
+        // Set state to NULL without waiting - avoids blocking on GPU operations
+        // The pipeline will clean up asynchronously
+        let _ = self.pipeline.set_state(gstreamer::State::Null);
+
+        tracing::debug!(path = ?self.source_path, "Video pipeline stopped");
+        Ok(())
+    }
+
+    /// Seek to the beginning for looping.
+    pub fn seek_to_start(&self) -> eyre::Result<()> {
+        use gstreamer::prelude::*;
+
+        let seek_flags = gstreamer::SeekFlags::FLUSH
+            | gstreamer::SeekFlags::KEY_UNIT
+            | gstreamer::SeekFlags::SNAP_BEFORE;
+
+        self.pipeline
+            .seek_simple(seek_flags, gstreamer::ClockTime::ZERO)?;
+
+        if let Ok(mut state) = self.frame_state.lock() {
+            state.eos = false;
+        }
+
+        Ok(())
+    }
+
+    /// Get the current frame if available.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn current_frame(&self) -> Option<AnimatedFrame> {
+        match self.pull_frame() {
+            Some(frame) => Some(frame),
+            None => self
+                .frame_state
+                .lock()
+                .ok()
+                .and_then(|state| state.current_frame.clone()),
+        }
+    }
+
+    /// Get the frame duration.
+    #[must_use]
+    pub fn frame_duration(&self) -> Duration {
+        self.frame_state
+            .lock()
+            .ok()
+            .map(|state| state.frame_duration)
+            .unwrap_or(DEFAULT_FRAME_DURATION)
+    }
+
+    /// Get video dimensions.
+    #[must_use]
+    pub fn video_dimensions(&self) -> Option<(u32, u32)> {
+        if let Some(dims) = self.frame_queue.last_frame_dimensions() {
+            return Some(dims);
+        }
+
+        use gstreamer::prelude::*;
+        let pad = self.appsink.static_pad("sink")?;
+        let caps = pad.current_caps()?;
+        let video_info = gstreamer_video::VideoInfo::from_caps(&caps).ok()?;
+        Some((video_info.width(), video_info.height()))
+    }
+
+    /// Pull last cached frame.
+    pub fn pull_cached_frame(&self, dest: &mut [u8]) -> Option<VideoFrameInfo> {
+        self.pull_frame_to_buffer(dest)
+    }
+
+    /// Try to get a DMA-BUF frame for zero-copy rendering.
+    ///
+    /// NOTE: This shares the file descriptor references from the frame queue.
+    /// The returned DmaBufBuffer shares Arc<OwnedFd> with the queued frame,
+    /// avoiding FD duplication on every render (which would cause FD leaks).
+    #[must_use]
+    pub fn try_get_dmabuf_frame(&self) -> Option<crate::dmabuf::DmaBufBuffer> {
+        let frame = self.frame_queue.get_render_frame()?;
+        let dmabuf_data = frame.dmabuf()?;
+
+        tracing::trace!(
+            width = frame.width,
+            height = frame.height,
+            fourcc = format!("{:#x}", dmabuf_data.fourcc),
+            modifier = format!("{:#x}", dmabuf_data.modifier),
+            "Got DMA-BUF frame - TRUE ZERO-COPY!"
+        );
+
+        // IMPORTANT: Share Arc<OwnedFd> references instead of duplicating FDs.
+        // Previously this called try_clone_to_owned() which leaked FDs over time.
+        let mut planes = Vec::with_capacity(dmabuf_data.planes.len());
+        for plane_data in &dmabuf_data.planes {
+            planes.push(crate::dmabuf::DmaBufPlane {
+                fd: std::sync::Arc::clone(&plane_data.fd),
+                offset: plane_data.offset,
+                stride: plane_data.stride,
+            });
+        }
+
+        Some(crate::dmabuf::DmaBufBuffer {
+            width: frame.width,
+            height: frame.height,
+            format: crate::dmabuf::DmaBufFormat {
+                fourcc: dmabuf_data.fourcc,
+                modifier: dmabuf_data.modifier,
+            },
+            planes,
+            wl_buffer: None,
+        })
+    }
+
+    /// Check for EOS and handle looping.
+    pub fn check_eos(&mut self) -> bool {
+        use gstreamer::prelude::*;
+
+        let Some(bus) = self.pipeline.bus() else {
+            return false;
+        };
+
+        while let Some(msg) = bus.pop() {
+            use gstreamer::MessageView;
+
+            match msg.view() {
+                MessageView::Eos(_) => {
+                    if self.looping {
+                        let loop_num = self
+                            .rebuild_count
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        debug!(loop_num, path = %self.source_path.display(), "Video EOS, seeking to start");
+
+                        if let Err(e) = self.seek_to_start() {
+                            error!(?e, "Failed to seek to start for loop");
+                            return true;
+                        }
+                        return false;
+                    }
+                    return true;
+                }
+                MessageView::Error(err) => {
+                    let error_msg = err.error().to_string();
+                    let src_path = err.src().map(|s| s.path_string());
+
+                    // Provide helpful error messages for common codec issues
+                    if error_msg.contains("missing a plug-in") {
+                        error!(
+                            src = ?src_path,
+                            error = %error_msg,
+                            "GStreamer pipeline error: Missing codec plugin. \
+                             For H.264/MP4 support on Fedora, install 'gstreamer1-plugin-openh264' or use VP9/WebM files. \
+                             Alternatively, enable RPM Fusion and install 'gstreamer1-plugins-ugly'."
+                        );
+                    } else {
+                        error!(
+                            src = ?src_path,
+                            error = %error_msg,
+                            "GStreamer pipeline error"
+                        );
+                    }
+                    return true;
+                }
+                MessageView::Warning(warn) => {
+                    warn!(
+                        src = ?warn.src().map(|s| s.path_string()),
+                        error = %warn.error(),
+                        "GStreamer pipeline warning"
+                    );
+                }
+                MessageView::StateChanged(state) => {
+                    if state.src().map(|s| s == &self.pipeline).unwrap_or(false) {
+                        debug!(old = ?state.old(), new = ?state.current(), "Pipeline state changed");
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        false
+    }
+}
+
+impl Drop for VideoPlayer {
+    fn drop(&mut self) {
+        // Stop frame queue first to signal callbacks to exit
+        self.frame_queue.stop();
+
+        // Set EOS flag
+        if let Ok(mut state) = self.frame_state.try_lock() {
+            state.eos = true;
+        }
+
+        // Set pipeline to NULL state - this is non-blocking
+        use gstreamer::prelude::*;
+        let _ = self.pipeline.set_state(gstreamer::State::Null);
+
+        tracing::debug!(path = ?self.source_path, "VideoPlayer dropped");
+    }
+}
