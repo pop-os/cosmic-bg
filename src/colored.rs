@@ -3,20 +3,12 @@
 use colorgrad::{Color, Gradient as ColorGradient};
 use cosmic_bg_config::Gradient;
 use image::Rgb32FImage;
+use rayon::prelude::*;
 
 /// Generate a background image from a color.
 pub fn single(color: [f32; 3], width: u32, height: u32) -> Rgb32FImage {
-    let mut imgbuf = Rgb32FImage::new(width, height);
-
     let pixel = image::Rgb(color);
-
-    for x in 0..width {
-        for y in 0..height {
-            imgbuf.put_pixel(x, y, pixel);
-        }
-    }
-
-    imgbuf
+    image::ImageBuffer::from_pixel(width, height, pixel)
 }
 
 /// Generate a background image from a gradient.
@@ -26,14 +18,8 @@ pub fn gradient(
     height: u32,
 ) -> Result<Rgb32FImage, colorgrad::GradientBuilderError> {
     let mut colors = Vec::with_capacity(gradient.colors.len());
-
     for &[r, g, b] in &*gradient.colors {
-        colors.push(colorgrad::Color::from_linear_rgba(
-            f32::from(r),
-            f32::from(g),
-            f32::from(b),
-            1.0,
-        ));
+        colors.push(colorgrad::Color::from_linear_rgba(r, g, b, 1.0));
     }
 
     let grad = colorgrad::GradientBuilder::new()
@@ -42,45 +28,44 @@ pub fn gradient(
         .build::<colorgrad::LinearGradient>()?;
 
     let mut imgbuf = image::ImageBuffer::new(width, height);
+    let width = width as f32;
+    let height = height as f32;
+    let orientation = gradient.radius as u16;
 
-    let width = f64::from(width);
-    let height = f64::from(height);
+    let (dmin, dmax) = grad.domain();
+    let angle = gradient.radius.to_radians();
+    let cos = f32::cos(angle);
+    let sin = f32::sin(angle);
+    const SCALE: f32 = 0.015;
+    let w_scale = width / SCALE;
+    let h_scale = height / SCALE;
 
     // Map t which is in range [a, b] to range [c, d]
-    #[allow(clippy::items_after_statements)]
-    fn remap(t: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
+    fn remap(t: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
         (t - a) * ((d - c) / (b - a)) + c
     }
 
-    #[allow(clippy::items_after_statements)]
-    const SCALE: f64 = 0.015;
+    imgbuf.par_enumerate_pixels_mut().for_each(|(x, y, pixel)| {
+        let x_f = x as f32;
+        let y_f = y as f32;
 
-    let positioner: Box<dyn Fn(u32, u32) -> f64> = match gradient.radius as u16 {
-        0 => Box::new(|_x, y| 1.0 - (y as f64 / height)),
-        90 => Box::new(|x, _y| x as f64 / width),
-        180 => Box::new(|_x, y| y as f64 / height),
-        270 => Box::new(|x, _y| 1.0 - (x as f64 / width)),
-        _ => Box::new(|x, y| {
-            let (dmin, dmax) = grad.domain();
-            let angle = f64::from(gradient.radius.to_radians());
-            let (x, y) = (f64::from(x) - width / SCALE, f64::from(y) - height / SCALE);
+        let pos = match orientation {
+            0 => 1.0 - (y_f / height),
+            90 => x_f / width,
+            180 => y_f / height,
+            270 => 1.0 - (x_f / width),
+            _ => remap(
+                (x_f - w_scale) * cos - (y_f - h_scale) * sin,
+                -w_scale,
+                w_scale,
+                dmin,
+                dmax,
+            ),
+        };
 
-            remap(
-                x * f64::cos(angle) - y * f64::sin(angle),
-                -width / SCALE,
-                width / SCALE,
-                f64::from(dmin),
-                f64::from(dmax),
-            )
-        }),
-    };
-
-    #[allow(clippy::cast_possible_truncation)]
-    for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-        let Color { r, g, b, .. } = grad.at(positioner(x, y) as f32);
-
-        *pixel = image::Rgb([r as f32, g as f32, b as f32]);
-    }
+        let Color { r, g, b, .. } = grad.at(pos);
+        *pixel = image::Rgb([r, g, b]);
+    });
 
     Ok(imgbuf)
 }
