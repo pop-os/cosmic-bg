@@ -402,6 +402,7 @@ dependencies = [
  "jxl-oxide",
  "notify",
  "rand 0.9.2",
+ "rayon",
  "smithay-client-toolkit 0.20.0",
  "tracing",
  "tracing-subscriber",
