@@ -4,16 +4,14 @@ use crate::{CosmicBg, CosmicBgLayer};
 
 use std::{
     collections::VecDeque,
-    fs::{self, File},
+    fs,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
 use cosmic_config::CosmicConfigEntry;
-use eyre::eyre;
 use image::{DynamicImage, ImageReader};
-use jxl_oxide::integration::JxlDecoder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{rng, seq::SliceRandom};
 use sctk::reexports::{
@@ -128,39 +126,23 @@ impl Wallpaper {
                 cur_resized_img = match source {
                     Source::Path(path) => {
                         if self.current_image.is_none() {
-                            self.current_image = Some(match path.extension() {
-                                Some(ext) if ext == "jxl" => match decode_jpegxl(path) {
-                                    Ok(image) => image,
+                            self.current_image = match ImageReader::open(path)
+                                .ok()
+                                .and_then(|f| f.with_guessed_format().ok())
+                            {
+                                Some(f) => match f.decode() {
+                                    Ok(img) => Some(img),
                                     Err(why) => {
                                         tracing::warn!(
                                             ?why,
-                                            "jpegl-xl image decode failed: {}",
+                                            "Failed to decode image: {}",
                                             path.display()
                                         );
                                         continue;
                                     }
                                 },
-
-                                _ => match ImageReader::open(path) {
-                                    Ok(img) => {
-                                        match img
-                                            .with_guessed_format()
-                                            .ok()
-                                            .and_then(|f| f.decode().ok())
-                                        {
-                                            Some(img) => img,
-                                            None => {
-                                                tracing::warn!(
-                                                    "could not decode image: {}",
-                                                    path.display()
-                                                );
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    Err(_) => continue,
-                                },
-                            });
+                                None => continue,
+                            };
                         }
                         let img = self.current_image.as_ref().unwrap();
 
@@ -401,15 +383,4 @@ fn current_image(output: &str) -> Option<Source> {
     };
 
     wallpaper.map(|(_name, path)| path)
-}
-
-/// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
-fn decode_jpegxl(path: &std::path::Path) -> eyre::Result<DynamicImage> {
-    let file = File::open(path).map_err(|why| eyre!("failed to open jxl image file: {why}"))?;
-
-    let decoder =
-        JxlDecoder::new(file).map_err(|why| eyre!("failed to read jxl image header: {why}"))?;
-
-    image::DynamicImage::from_decoder(decoder)
-        .map_err(|why| eyre!("failed to decode jxl image: {why}"))
 }
