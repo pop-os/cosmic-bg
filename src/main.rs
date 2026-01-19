@@ -99,6 +99,8 @@ fn main() -> color_eyre::Result<()> {
         }
     }
 
+    let _ = jxl_oxide::integration::register_image_decoding_hook();
+
     init_logger();
 
     let conn = Connection::connect_to_env().wrap_err("wayland client connection failed")?;
