@@ -162,13 +162,12 @@ fn main() -> color_eyre::Result<()> {
 
                             _ => {
                                 tracing::debug!(key, "key modified");
-                                if let Some(output) = key.strip_prefix("output.") {
-                                    if let Ok(new_entry) = conf_context.entry(key) {
-                                        if let Some(existing) = state.config.entry_mut(output) {
-                                            *existing = new_entry;
-                                            changes_applied = true;
-                                        }
-                                    }
+                                if let Some(output) = key.strip_prefix("output.")
+                                    && let Ok(new_entry) = conf_context.entry(key)
+                                    && let Some(existing) = state.config.entry_mut(output)
+                                {
+                                    *existing = new_entry;
+                                    changes_applied = true;
                                 }
                             }
                         }
