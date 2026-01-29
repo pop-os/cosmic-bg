@@ -33,3 +33,6 @@ features = ["calloop"]
 
 [profile.release]
 opt-level = 3
+
+[dev-dependencies]
+tempfile = "3"
