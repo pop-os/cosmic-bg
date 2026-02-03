@@ -4,16 +4,14 @@ use crate::{CosmicBg, CosmicBgLayer};
 
 use std::{
     collections::VecDeque,
-    fs::{self, File},
+    fs,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
 use cosmic_config::CosmicConfigEntry;
-use eyre::eyre;
 use image::{DynamicImage, ImageReader};
-use jxl_oxide::integration::JxlDecoder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{rng, seq::SliceRandom};
 use sctk::reexports::{
@@ -118,7 +116,7 @@ impl Wallpaper {
 
             if cur_resized_img
                 .as_ref()
-                .map_or(true, |img| img.width() != width || img.height() != height)
+                .is_none_or(|img| img.width() != width || img.height() != height)
             {
                 let Some(source) = self.current_source.as_ref() else {
                     tracing::info!("No source for wallpaper");
@@ -128,39 +126,23 @@ impl Wallpaper {
                 cur_resized_img = match source {
                     Source::Path(path) => {
                         if self.current_image.is_none() {
-                            self.current_image = Some(match path.extension() {
-                                Some(ext) if ext == "jxl" => match decode_jpegxl(&path) {
-                                    Ok(image) => image,
+                            self.current_image = match ImageReader::open(path)
+                                .ok()
+                                .and_then(|f| f.with_guessed_format().ok())
+                            {
+                                Some(f) => match f.decode() {
+                                    Ok(img) => Some(img),
                                     Err(why) => {
                                         tracing::warn!(
                                             ?why,
-                                            "jpegl-xl image decode failed: {}",
+                                            "Failed to decode image: {}",
                                             path.display()
                                         );
                                         continue;
                                     }
                                 },
-
-                                _ => match ImageReader::open(&path) {
-                                    Ok(img) => {
-                                        match img
-                                            .with_guessed_format()
-                                            .ok()
-                                            .and_then(|f| f.decode().ok())
-                                        {
-                                            Some(img) => img,
-                                            None => {
-                                                tracing::warn!(
-                                                    "could not decode image: {}",
-                                                    path.display()
-                                                );
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    Err(_) => continue,
-                                },
-                            });
+                                None => continue,
+                            };
                         }
                         let img = self.current_image.as_ref().unwrap();
 
@@ -279,24 +261,24 @@ impl Wallpaper {
                     };
 
                     // If a wallpaper from this slideshow was previously set, resume with that wallpaper.
-                    if let Some(Source::Path(last_path)) = current_image(&self.entry.output) {
-                        if image_queue.contains(&last_path) {
-                            while let Some(path) = image_queue.pop_front() {
-                                if path == last_path {
-                                    image_queue.push_front(path);
-                                    break;
-                                }
-
-                                image_queue.push_back(path);
+                    if let Some(Source::Path(last_path)) = current_image(&self.entry.output)
+                        && image_queue.contains(&last_path)
+                    {
+                        while let Some(path) = image_queue.pop_front() {
+                            if path == last_path {
+                                image_queue.push_front(path);
+                                break;
                             }
+
+                            image_queue.push_back(path);
                         }
                     }
                 }
 
-                image_queue.pop_front().map(|current_image_path| {
+                if let Some(current_image_path) = image_queue.pop_front() {
                     self.current_source = Some(Source::Path(current_image_path.clone()));
                     image_queue.push_back(current_image_path);
-                });
+                }
             }
 
             Source::Color(ref c) => {
@@ -359,7 +341,7 @@ impl Wallpaper {
                             return TimeoutAction::Drop; // Drop if no item found for this timer
                         };
 
-                        while let Some(next) = item.image_queue.pop_front() {
+                        if let Some(next) = item.image_queue.pop_front() {
                             item.current_source = Some(Source::Path(next.clone()));
                             if let Err(err) = item.save_state() {
                                 error!("{err}");
@@ -401,15 +383,4 @@ fn current_image(output: &str) -> Option<Source> {
     };
 
     wallpaper.map(|(_name, path)| path)
-}
-
-/// Decodes JPEG XL image files into `image::DynamicImage` via `jxl-oxide`.
-fn decode_jpegxl(path: &std::path::Path) -> eyre::Result<DynamicImage> {
-    let file = File::open(path).map_err(|why| eyre!("failed to open jxl image file: {why}"))?;
-
-    let decoder =
-        JxlDecoder::new(file).map_err(|why| eyre!("failed to read jxl image header: {why}"))?;
-
-    image::DynamicImage::from_decoder(decoder)
-        .map_err(|why| eyre!("failed to decode jxl image: {why}"))
 }

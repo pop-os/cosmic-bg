@@ -1,12 +1,12 @@
 [package]
 name = "cosmic-bg-config"
-version = "0.1.0"
+version = "1.0.3"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-derive_setters = "0.1.8"
+derive_setters = "0.1.9"
 image.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 tracing.workspace = true
