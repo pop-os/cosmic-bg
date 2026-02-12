@@ -109,7 +109,7 @@ impl Wallpaper {
                 continue;
             };
 
-            let Some((width, height)) = layer.size else {
+            let Some((width, height)) = layer.effective_size() else {
                 continue;
             };
 
