@@ -1,2 +1,2 @@
 app-name = خلفية COSMIC
-translator-credits = زياد السيد
+translator-credits = zefr0x و زياد السيد
