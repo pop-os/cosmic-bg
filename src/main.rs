@@ -83,6 +83,31 @@ pub struct CosmicBgLayer {
     needs_redraw: bool,
     size: Option<(u32, u32)>,
     fractional_scale: Option<u32>,
+    transform: wl_output::Transform,
+}
+
+/// Returns `true` if the given transform represents a 90° or 270° rotation.
+fn is_rotated_90_or_270(transform: wl_output::Transform) -> bool {
+    matches!(
+        transform,
+        wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270
+    )
+}
+
+impl CosmicBgLayer {
+    /// Returns the effective size, swapping width and height for 90°/270° rotations.
+    pub fn effective_size(&self) -> Option<(u32, u32)> {
+        self.size.map(|(w, h)| {
+            if is_rotated_90_or_270(self.transform) {
+                (h, w)
+            } else {
+                (w, h)
+            }
+        })
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -357,6 +382,7 @@ impl CosmicBg {
             layer,
             viewport,
             wl_output: output,
+            transform: output_info.transform,
             output_info,
             size: None,
             fractional_scale,
@@ -402,10 +428,28 @@ impl CompositorHandler for CosmicBg {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
+        surface: &wl_surface::WlSurface,
+        new_transform: wl_output::Transform,
     ) {
-        // TODO
+        for wallpaper in &mut self.wallpapers {
+            if let Some(layer) = wallpaper
+                .layers
+                .iter_mut()
+                .find(|layer| layer.layer.wl_surface() == surface)
+            {
+                if layer.transform != new_transform {
+                    tracing::debug!(
+                        old_transform = ?layer.transform,
+                        new_transform = ?new_transform,
+                        "output transform changed"
+                    );
+                    layer.transform = new_transform;
+                    layer.needs_redraw = true;
+                    wallpaper.draw();
+                }
+                break;
+            }
+        }
     }
 
     fn surface_enter(
