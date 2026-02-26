@@ -11,7 +11,7 @@ use std::{
 
 use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
 use cosmic_config::CosmicConfigEntry;
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageReader, Limits};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::{rng, seq::SliceRandom};
 use sctk::reexports::{
@@ -130,15 +130,21 @@ impl Wallpaper {
                                 .ok()
                                 .and_then(|f| f.with_guessed_format().ok())
                             {
-                                Some(f) => match f.decode() {
-                                    Ok(img) => Some(img),
-                                    Err(why) => {
-                                        tracing::warn!(
-                                            ?why,
-                                            "Failed to decode image: {}",
-                                            path.display()
-                                        );
-                                        continue;
+                                Some(mut f) => {
+                                    let mut limits = Limits::default();
+                                    limits.max_alloc = Some(1024 * 1024 * 1024);
+                                    f.limits(limits);
+
+                                    match f.decode() {
+                                        Ok(img) => Some(img),
+                                        Err(why) => {
+                                            tracing::warn!(
+                                                ?why,
+                                                "Failed to decode image: {}",
+                                                path.display()
+                                            );
+                                            continue;
+                                        }
                                     }
                                 },
                                 None => continue,
