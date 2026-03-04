@@ -30,7 +30,6 @@ tracing = "0.1.44"
 
 [dependencies.cosmic-config]
 git = "https://github.com/pop-os/libcosmic"
-branch = "iced-rebase"
 features = ["calloop"]
 
 [profile.release]
