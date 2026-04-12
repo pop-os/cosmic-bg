@@ -1,2 +1,2 @@
 app-name = COSMIC Hintergrund
-translator-credits = Hadi Chokr
+translator-credits = Ashley Wulber
