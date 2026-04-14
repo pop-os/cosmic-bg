@@ -1,2 +1,2 @@
 app-name = Fundo COSMIC
-translator-credits = Ashley Wulber
+translator-credits = Hugo Carvalho
