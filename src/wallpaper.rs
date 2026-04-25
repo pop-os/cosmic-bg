@@ -146,7 +146,7 @@ impl Wallpaper {
                                             continue;
                                         }
                                     }
-                                },
+                                }
                                 None => continue,
                             };
                         }
