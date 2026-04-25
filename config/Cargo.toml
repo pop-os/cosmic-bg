@@ -13,3 +13,5 @@ tracing.workspace = true
 
 [dependencies.cosmic-config]
 git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["macro"]
