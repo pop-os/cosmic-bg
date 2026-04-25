@@ -65,13 +65,11 @@ run *args:
 install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     @just data/install
-    @just data/icons/install
 
 # Uninstalls installed files
 uninstall:
     rm {{bin-dst}}
     @just data/uninstall
-    @just data/icons/uninstall
 
 # Vendor dependencies locally
 vendor:
