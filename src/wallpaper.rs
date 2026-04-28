@@ -2,25 +2,21 @@
 
 use crate::{CosmicBg, CosmicBgLayer};
 
-use std::{
-    collections::VecDeque,
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source, state::State};
+use cosmic_bg_config::state::State;
+use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source};
 use cosmic_config::CosmicConfigEntry;
 use image::{DynamicImage, ImageReader, Limits};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use rand::{rng, seq::SliceRandom};
-use sctk::reexports::{
-    calloop::{
-        self, RegistrationToken,
-        timer::{TimeoutAction, Timer},
-    },
-    client::QueueHandle,
-};
+use rand::rng;
+use rand::seq::SliceRandom;
+use sctk::reexports::calloop::timer::{TimeoutAction, Timer};
+use sctk::reexports::calloop::{self, RegistrationToken};
+use sctk::reexports::client::QueueHandle;
 use tracing::error;
 use walkdir::WalkDir;
 
