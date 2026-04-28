@@ -5,7 +5,9 @@ pub mod state;
 use cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
 use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::HashSet, path::PathBuf};
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";

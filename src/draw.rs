@@ -2,11 +2,10 @@
 
 use crate::{CosmicBg, CosmicBgLayer};
 use image::{DynamicImage, GenericImageView};
-use sctk::{
-    reexports::client::{QueueHandle, protocol::wl_shm},
-    shell::WaylandSurface,
-    shm::slot::{Buffer, CreateBufferError, SlotPool},
-};
+use sctk::reexports::client::QueueHandle;
+use sctk::reexports::client::protocol::wl_shm;
+use sctk::shell::WaylandSurface;
+use sctk::shm::slot::{Buffer, CreateBufferError, SlotPool};
 
 pub fn canvas(
     pool: &mut SlotPool,

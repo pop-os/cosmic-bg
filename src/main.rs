@@ -32,41 +32,34 @@ mod malloc {
     }
 }
 
-use cosmic_bg_config::{Config, state::State};
-use cosmic_config::{CosmicConfigEntry, calloop::ConfigWatchSource};
+use cosmic_bg_config::Config;
+use cosmic_bg_config::state::State;
+use cosmic_config::CosmicConfigEntry;
+use cosmic_config::calloop::ConfigWatchSource;
 use eyre::Context;
+use sctk::compositor::{CompositorHandler, CompositorState};
+use sctk::output::{OutputHandler, OutputInfo, OutputState};
+use sctk::reexports::calloop;
+use sctk::reexports::calloop_wayland_source::WaylandSource;
+use sctk::reexports::client::globals::registry_queue_init;
+use sctk::reexports::client::protocol::wl_output::{self, WlOutput};
+use sctk::reexports::client::protocol::wl_surface;
+use sctk::reexports::client::{Connection, Dispatch, Proxy, QueueHandle, Weak, delegate_noop};
+use sctk::reexports::protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
+use sctk::reexports::protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
+use sctk::registry::{ProvidesRegistryState, RegistryState};
+use sctk::shell::WaylandSurface;
+use sctk::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    LayerSurfaceConfigure,
+};
+use sctk::shm::slot::SlotPool;
+use sctk::shm::{Shm, ShmHandler};
 use sctk::{
-    compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
-    output::{OutputHandler, OutputInfo, OutputState},
-    reexports::{
-        calloop,
-        calloop_wayland_source::WaylandSource,
-        client::{
-            Connection, Dispatch, Proxy, QueueHandle, Weak, delegate_noop,
-            globals::registry_queue_init,
-            protocol::{
-                wl_output::{self, WlOutput},
-                wl_surface,
-            },
-        },
-        protocols::wp::{
-            fractional_scale::v1::client::{
-                wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
-            },
-            viewporter::client::{wp_viewport, wp_viewporter},
-        },
-    },
-    registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
-    },
-    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 
 use tracing::error;
