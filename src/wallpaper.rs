@@ -210,13 +210,20 @@ impl Wallpaper {
     pub fn load_images(&mut self) {
         let mut image_queue = VecDeque::new();
         let xdg_data_dirs: Vec<String> = match std::env::var("XDG_DATA_DIRS") {
-            Ok(raw_xdg_data_dirs) => raw_xdg_data_dirs
+        	// Only Ok if the xdg var exists and is not empty
+            Ok(raw_xdg_data_dirs) if !raw_xdg_data_dirs.is_empty()  => raw_xdg_data_dirs
                 .split(':')
                 .map(|s| format!("{}/backgrounds/", s))
                 .collect(),
-            Err(_) => Vec::new(),
+            // fallback to defaults in compliance with XDG standards    
+            _  => vec![  
+            	"/usr/local/share/backgrounds/".to_string(),
+            	"/usr/share/backgrounds/".to_string()
+            ],
         };
 
+		tracing::debug!(?xdg_data_dirs);
+		
         match self.entry.source {
             Source::Path(ref source) => {
                 tracing::debug!(?source, "loading images");
