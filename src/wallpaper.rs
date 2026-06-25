@@ -34,6 +34,7 @@ pub struct Wallpaper {
     // Cache of source image, if `current_source` is a `Source::Path`
     current_image: Option<image::DynamicImage>,
     timer_token: Option<RegistrationToken>,
+    subfolder_search: bool,
 }
 
 impl Drop for Wallpaper {
@@ -50,6 +51,8 @@ impl Wallpaper {
         queue_handle: QueueHandle<CosmicBg>,
         loop_handle: calloop::LoopHandle<'static, CosmicBg>,
         source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
+        subfolder_search: bool,
+        
     ) -> Self {
         let mut wallpaper = Wallpaper {
             entry,
@@ -60,6 +63,7 @@ impl Wallpaper {
             timer_token: None,
             loop_handle,
             queue_handle,
+            subfolder_search,
         };
 
         wallpaper.load_images();
@@ -210,13 +214,22 @@ impl Wallpaper {
     pub fn load_images(&mut self) {
         let mut image_queue = VecDeque::new();
         let xdg_data_dirs: Vec<String> = match std::env::var("XDG_DATA_DIRS") {
-            Ok(raw_xdg_data_dirs) => raw_xdg_data_dirs
+        	// Only Ok if the xdg var exists and is not empty
+            Ok(raw_xdg_data_dirs) if !raw_xdg_data_dirs.is_empty()  => raw_xdg_data_dirs
                 .split(':')
                 .map(|s| format!("{}/backgrounds/", s))
                 .collect(),
-            Err(_) => Vec::new(),
+            // fallback to defaults in compliance with XDG standards    
+            _  => vec![  
+            	"/usr/local/share/backgrounds/".to_string(),
+            	"/usr/share/backgrounds/".to_string()
+            ],
         };
 
+		
+		
+		tracing::debug!(?xdg_data_dirs);
+		
         match self.entry.source {
             Source::Path(ref source) => {
                 tracing::debug!(?source, "loading images");
@@ -225,7 +238,7 @@ impl Wallpaper {
                     if source.is_dir() {
                         if xdg_data_dirs
                             .iter()
-                            .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
+                            .any(|xdg_data_dir| source.starts_with(xdg_data_dir)) || self.subfolder_search
                         {
                             // Store paths of wallpapers to be used for the slideshow.
                             for img_path in WalkDir::new(source)
