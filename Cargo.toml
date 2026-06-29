@@ -10,7 +10,7 @@ colorgrad = { workspace = true }
 cosmic-bg-config = { path = "./config" }
 eyre = "0.6.12"
 fast_image_resize = { version = "6.0.0", features = ["image"] }
-image = { workspace = true, features = ["avif", "hdr", "jpeg", "png", "rayon", "webp"] }
+image = { workspace = true, features = ["avif-native", "hdr", "jpeg", "png", "rayon", "webp"] }
 rayon = "1.12"
 jxl-oxide = { version = "0.12.6", features = ["image"] }
 notify = "8.2.0"
