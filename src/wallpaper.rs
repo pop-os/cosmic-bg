@@ -4,13 +4,14 @@ use crate::{CosmicBg, CosmicBgLayer};
 
 use std::collections::VecDeque;
 use std::fs;
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use cosmic_bg_config::state::State;
 use cosmic_bg_config::{Color, Entry, SamplingMethod, ScalingMode, Source};
 use cosmic_config::CosmicConfigEntry;
-use image::{DynamicImage, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageReader, ImageResult, Limits};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::rng;
 use rand::seq::SliceRandom;
@@ -126,23 +127,17 @@ impl Wallpaper {
                                 .ok()
                                 .and_then(|f| f.with_guessed_format().ok())
                             {
-                                Some(mut f) => {
-                                    let mut limits = Limits::default();
-                                    limits.max_alloc = Some(1024 * 1024 * 1024);
-                                    f.limits(limits);
-
-                                    match f.decode() {
-                                        Ok(img) => Some(img),
-                                        Err(why) => {
-                                            tracing::warn!(
-                                                ?why,
-                                                "Failed to decode image: {}",
-                                                path.display()
-                                            );
-                                            continue;
-                                        }
+                                Some(f) => match decode(f) {
+                                    Ok(img) => Some(img),
+                                    Err(why) => {
+                                        tracing::warn!(
+                                            ?why,
+                                            "Failed to decode image: {}",
+                                            path.display()
+                                        );
+                                        continue;
                                     }
-                                }
+                                },
                                 None => continue,
                             };
                         }
@@ -369,6 +364,23 @@ impl Wallpaper {
             l.needs_redraw = true;
         }
     }
+}
+
+fn decode(mut reader: ImageReader<BufReader<fs::File>>) -> ImageResult<DynamicImage> {
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(1024 * 1024 * 1024);
+    reader.limits(limits.clone());
+
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+
+    Ok(image)
 }
 
 fn current_image(output: &str) -> Option<Source> {
