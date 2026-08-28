@@ -20,6 +20,7 @@ jxl-oxide = { version = "0.12.6", features = ["image"] }
 notify = "8.2.0"
 rand = "0.10"
 sctk = { package = "smithay-client-toolkit", version = "0.20.0" }
+cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols" }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
 walkdir = "2.5"
