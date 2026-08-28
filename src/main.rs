@@ -36,6 +36,7 @@ use cosmic_bg_config::Config;
 use cosmic_bg_config::state::State;
 use cosmic_config::CosmicConfigEntry;
 use cosmic_config::calloop::ConfigWatchSource;
+use cosmic_protocols::session_lock_layer::v1::client::cosmic_session_lock_layer_manager_v1;
 use eyre::Context;
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputInfo, OutputState};
@@ -233,6 +234,7 @@ fn main() -> color_eyre::Result<()> {
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
         viewporter: globals.bind(&qh, 1..=1, ()).unwrap(),
         fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
+        session_lock_layer_manager: globals.bind(&qh, 1..=1, ()).ok(),
         qh,
         source_tx,
         loop_handle: event_loop.handle(),
@@ -262,6 +264,8 @@ pub struct CosmicBg {
     layer_state: LayerShell,
     viewporter: wp_viewporter::WpViewporter,
     fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    session_lock_layer_manager:
+        Option<cosmic_session_lock_layer_manager_v1::CosmicSessionLockLayerManagerV1>,
     qh: QueueHandle<CosmicBg>,
     source_tx: calloop::channel::SyncSender<(String, notify::Event)>,
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
@@ -334,6 +338,13 @@ impl CosmicBg {
         layer.set_anchor(Anchor::all());
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+
+        if let Some(session_lock_layer_manager) = &self.session_lock_layer_manager {
+            if let sctk::shell::wlr_layer::SurfaceKind::Wlr(surface) = layer.kind() {
+                session_lock_layer_manager.set_show_on_lock(surface);
+            }
+        }
+
         surface.commit();
 
         let viewport = self.viewporter.get_viewport(&surface, &self.qh, ());
@@ -597,6 +608,7 @@ delegate_registry!(CosmicBg);
 delegate_noop!(CosmicBg: wp_viewporter::WpViewporter);
 delegate_noop!(CosmicBg: wp_viewport::WpViewport);
 delegate_noop!(CosmicBg: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+delegate_noop!(CosmicBg: ignore cosmic_session_lock_layer_manager_v1::CosmicSessionLockLayerManagerV1);
 
 impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSurface>>
     for CosmicBg
