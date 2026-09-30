@@ -434,8 +434,8 @@ mod tests {
         // Assume XDG_DATA_DIRS does NOT contain this temp dir (which is true)
         let xdg_data_dirs: Vec<String> = Vec::new();
 
-        if let Ok(source) = source.canonicalize() {
-            if source.is_dir() {
+        if let Ok(source) = source.canonicalize()
+            && source.is_dir() {
                 if xdg_data_dirs
                     .iter()
                     .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
@@ -453,7 +453,6 @@ mod tests {
                     }
                 }
             }
-        }
 
         // With WalkDir, we expect to find 2 images (recursive)
         assert_eq!(image_queue.len(), 2, "Should find 2 images recursively");
