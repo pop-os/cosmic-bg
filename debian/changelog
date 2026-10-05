@@ -1,5 +1,9 @@
-cosmic-bg (0.1.0) UNRELEASED; urgency=medium
+cosmic-bg (1.10.0) noble; urgency=medium
 
+  [ Ashley Wulber ]
   * Initial release.
 
- -- Ashley Wulber <ashley@system76.com>  Thu, 07 Apr 2022 09:39:19 -0700
+  [ Michael Murphy ]
+  * Epoch 1.10.0 version update
+
+ -- Michael Murphy <michael@mmurphy.dev>  Mon, 05 Oct 2026 21:19:17 +0200
