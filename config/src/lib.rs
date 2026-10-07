@@ -13,6 +13,7 @@ pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";
 pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
+pub const SEARCH_SUBFOLDERS: &str = "search-subfolders";
 
 /// Create a context to the `cosmic-bg` config.
 ///
@@ -72,6 +73,24 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    pub fn search_subfolders(&self) -> bool {
+    	if let Ok(value) = self.0.get::<bool>(SEARCH_SUBFOLDERS) {
+    		return value;
+    	}
+
+    	let _res = self.0.set(SEARCH_SUBFOLDERS, true);
+
+    	true
+    }
+
+    pub fn set_search_subfolders(&self, value: bool) -> Result<(), cosmic_config::Error> {
+    	if self.search_subfolders() != value {
+    		return self.0.set(SEARCH_SUBFOLDERS, value);
+    	}
+    	
+    	Ok(())
     }
 }
 
@@ -211,6 +230,7 @@ pub struct Config {
     pub outputs: HashSet<String>,
     pub backgrounds: Vec<Entry>,
     pub default_background: Entry,
+    pub search_subfolders: bool,
 }
 
 impl Default for Config {
@@ -220,6 +240,7 @@ impl Default for Config {
             outputs: HashSet::new(),
             backgrounds: Vec::new(),
             default_background: Entry::fallback(),
+            search_subfolders: true,
         }
     }
 }
@@ -233,6 +254,7 @@ impl Config {
     pub fn load(context: &Context) -> Result<Self, cosmic_config::Error> {
         let mut config = Self {
             same_on_all: context.same_on_all(),
+            search_subfolders: context.search_subfolders(),
             ..Default::default()
         };
 
