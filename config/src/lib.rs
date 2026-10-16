@@ -13,14 +13,70 @@ pub const NAME: &str = "com.system76.CosmicBackground";
 pub const BACKGROUNDS: &str = "backgrounds";
 pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
+pub const VERSION: u64 = 1;
 
-/// Create a context to the `cosmic-bg` config.
+/// XXX must be kept in step with `cosmic_theme::ThemeMode`
+pub const MODE_NAME: &str = "com.system76.CosmicTheme.Mode";
+pub const MODE_VERSION: u64 = 1;
+pub const MODE_KEY: &str = "is_dark";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum Mode {
+    Dark,
+    Light,
+}
+
+impl Mode {
+    pub const ALL: [Self; 2] = [Self::Dark, Self::Light];
+
+    #[must_use]
+    pub const fn from_is_dark(is_dark: bool) -> Self {
+        if is_dark { Self::Dark } else { Self::Light }
+    }
+
+    #[must_use]
+    pub const fn config_name(self) -> &'static str {
+        match self {
+            Self::Dark => "com.system76.CosmicBackground.Dark",
+            Self::Light => "com.system76.CosmicBackground.Light",
+        }
+    }
+
+    /// Create a context to this mode's backgrounds.
+    pub fn context(self) -> Result<Context, cosmic_config::Error> {
+        CosmicConfig::new(self.config_name(), VERSION).map(Context)
+    }
+
+    /// The config that says whether dark or light is active.
+    pub fn config() -> Result<CosmicConfig, cosmic_config::Error> {
+        CosmicConfig::new(MODE_NAME, MODE_VERSION)
+    }
+
+    #[must_use]
+    pub fn current() -> Self {
+        Self::config()
+            .and_then(|config| config.get::<bool>(MODE_KEY))
+            .map_or(Self::Dark, Self::from_is_dark)
+    }
+}
+
+/// Create a context to the backgrounds of the current mode.
 ///
 /// # Errors
 ///
 /// Fails if cosmic-config paths are missing or cannot be created.
 pub fn context() -> Result<Context, cosmic_config::Error> {
-    CosmicConfig::new(NAME, 1).map(Context)
+    Mode::current().context()
+}
+
+/// Create a context to the backgrounds of a given mode.
+pub fn context_for(mode: Mode) -> Result<Context, cosmic_config::Error> {
+    mode.context()
+}
+
+/// The old background config.
+pub fn shared() -> Result<CosmicConfig, cosmic_config::Error> {
+    CosmicConfig::new(NAME, VERSION)
 }
 
 #[derive(Clone, Debug)]
@@ -73,10 +129,44 @@ impl Context {
 
         Ok(())
     }
+
+    /// Seed this mode's backgrounds from the config both modes took over from,
+    /// when it holds none of its own. Returns whether anything was written.
+    pub fn seed_from(&self, shared: &CosmicConfig) -> Result<bool, cosmic_config::Error> {
+        if self.0.get::<Entry>(DEFAULT_BACKGROUND).is_ok() {
+            return Ok(false);
+        }
+
+        let mut seeded = false;
+
+        if let Ok(entry) = shared.get::<Entry>(DEFAULT_BACKGROUND) {
+            self.0.set(DEFAULT_BACKGROUND, entry)?;
+            seeded = true;
+        }
+
+        let backgrounds = shared.get::<Vec<String>>(BACKGROUNDS).unwrap_or_default();
+        for output in &backgrounds {
+            let key = ["output.", output].concat();
+            if let Ok(entry) = shared.get::<Entry>(&key) {
+                self.0.set(&key, entry)?;
+                seeded = true;
+            }
+        }
+        if !backgrounds.is_empty() {
+            self.0.set(BACKGROUNDS, backgrounds)?;
+            seeded = true;
+        }
+
+        if let Ok(same_on_all) = shared.get::<bool>(SAME_ON_ALL) {
+            self.0.set(SAME_ON_ALL, same_on_all)?;
+            seeded = true;
+        }
+
+        Ok(seeded)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Setters)]
-#[serde(deny_unknown_fields)]
 #[must_use]
 pub struct Entry {
     /// the configured output
@@ -85,8 +175,6 @@ pub struct Entry {
     /// the configured image source
     #[setters(skip)]
     pub source: Source,
-    /// whether the images should be filtered by the active theme
-    pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
     /// filter used to scale images
@@ -128,7 +216,6 @@ impl Entry {
         Self {
             output,
             source,
-            filter_by_theme: false,
             rotation_frequency: 900,
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
@@ -143,7 +230,6 @@ impl Entry {
             source: Source::Path(PathBuf::from(
                 "/usr/share/backgrounds/cosmic/orion_nebula_nasa_heic0601a.jpg",
             )),
-            filter_by_theme: true,
             rotation_frequency: 3600,
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),

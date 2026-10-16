@@ -34,7 +34,8 @@ image = { version = "0.25.10", default-features = false }
 tracing = "0.1.44"
 
 [dependencies.cosmic-config]
-git = "https://github.com/pop-os/libcosmic"
+path = "../libcosmic/cosmic-config"
+default-features = false
 features = ["calloop"]
 
 [profile.release]
