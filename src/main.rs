@@ -156,6 +156,14 @@ fn main() -> color_eyre::Result<()> {
                                 changes_applied = true;
                             }
 
+                            cosmic_bg_config::SEARCH_SUBFOLDERS => {
+                            	tracing::debug!("updating search_subfolders");
+                            	state.config.search_subfolders = conf_context.search_subfolders();
+                            	
+
+                            	changes_applied = true;
+                            }
+
                             _ => {
                                 tracing::debug!(key, "key modified");
                                 if let Some(output) = key.strip_prefix("output.")
@@ -180,6 +188,7 @@ fn main() -> color_eyre::Result<()> {
                             outputs = ?state.config.outputs,
                             backgrounds = ?state.config.backgrounds,
                             default_background = ?state.config.default_background.source,
+                            search_subfolders = state.config.search_subfolders,
                             "new state"
                         );
                     }
@@ -210,6 +219,7 @@ fn main() -> color_eyre::Result<()> {
                     qh.clone(),
                     event_loop.handle(),
                     source_tx.clone(),
+                    config.search_subfolders,
                 )
             })
         });
@@ -221,6 +231,7 @@ fn main() -> color_eyre::Result<()> {
             qh.clone(),
             event_loop.handle(),
             source_tx.clone(),
+            config.search_subfolders,
         ));
 
         wallpapers
@@ -284,6 +295,7 @@ impl CosmicBg {
             self.qh.clone(),
             self.loop_handle.clone(),
             self.source_tx.clone(),
+            self.config.search_subfolders,
         );
 
         let mut backgrounds = self.config.backgrounds.clone();
@@ -302,6 +314,7 @@ impl CosmicBg {
                         self.qh.clone(),
                         self.loop_handle.clone(),
                         self.source_tx.clone(),
+                        self.config.search_subfolders,
                     );
 
                     new_wallpaper
