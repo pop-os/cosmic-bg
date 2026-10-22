@@ -2,6 +2,7 @@
 
 mod colored;
 mod draw;
+mod fade;
 mod img_source;
 mod scaler;
 mod wallpaper;
@@ -38,14 +39,20 @@ use cosmic_config::CosmicConfigEntry;
 use cosmic_config::calloop::ConfigWatchSource;
 use cosmic_protocols::session_lock_layer::v1::client::cosmic_session_lock_layer_manager_v1;
 use eyre::Context;
+use fade::{Fade, multiplier, slerp};
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputInfo, OutputState};
 use sctk::reexports::calloop;
 use sctk::reexports::calloop_wayland_source::WaylandSource;
 use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::protocol::wl_output::{self, WlOutput};
+use sctk::reexports::client::protocol::wl_subcompositor::WlSubcompositor;
+use sctk::reexports::client::protocol::wl_subsurface::WlSubsurface;
 use sctk::reexports::client::protocol::wl_surface;
 use sctk::reexports::client::{Connection, Dispatch, Proxy, QueueHandle, Weak, delegate_noop};
+use sctk::reexports::protocols::wp::alpha_modifier::v1::client::{
+    wp_alpha_modifier_surface_v1, wp_alpha_modifier_v1,
+};
 use sctk::reexports::protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
@@ -63,13 +70,14 @@ use sctk::{
     registry_handlers,
 };
 
+use std::time::Duration;
 use tracing::error;
 use tracing_subscriber::prelude::*;
 use wallpaper::Wallpaper;
 
 #[derive(Debug)]
 pub struct CosmicBgLayer {
-    layer: LayerSurface,
+    kind: LayerKind,
     viewport: wp_viewport::WpViewport,
     wl_output: WlOutput,
     output_info: OutputInfo,
@@ -77,6 +85,52 @@ pub struct CosmicBgLayer {
     needs_redraw: bool,
     size: Option<(u32, u32)>,
     fractional_scale: Option<u32>,
+}
+
+#[derive(Debug)]
+enum LayerKind {
+    Layer(LayerSurface),
+    Subsurface {
+        subsurface: WlSubsurface,
+        wl_surface: wl_surface::WlSurface,
+        fade: Option<FadeIn>,
+    },
+}
+
+#[derive(Debug)]
+struct FadeIn {
+    alpha: wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1,
+    fade: Fade,
+}
+
+impl CosmicBgLayer {
+    fn surface(&self) -> &wl_surface::WlSurface {
+        match &self.kind {
+            LayerKind::Layer(layer) => layer.wl_surface(),
+            LayerKind::Subsurface { wl_surface, .. } => wl_surface,
+        }
+    }
+
+    fn is_layer(&self) -> bool {
+        matches!(self.kind, LayerKind::Layer(_))
+    }
+}
+
+impl Drop for CosmicBgLayer {
+    fn drop(&mut self) {
+        if let LayerKind::Subsurface {
+            subsurface,
+            wl_surface,
+            fade,
+        } = &mut self.kind
+        {
+            if let Some(fade) = fade.take() {
+                fade.alpha.destroy();
+            }
+            subsurface.destroy();
+            wl_surface.destroy();
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -233,6 +287,8 @@ fn main() -> color_eyre::Result<()> {
         shm_state: Shm::bind(&globals, &qh).unwrap(),
         layer_state: LayerShell::bind(&globals, &qh).unwrap(),
         viewporter: globals.bind(&qh, 1..=1, ()).unwrap(),
+        alpha_modifier: globals.bind(&qh, 1..=1, ()).ok(),
+        subcompositor: globals.bind(&qh, 1..=1, ()).ok(),
         fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
         session_lock_layer_manager: globals.bind(&qh, 1..=1, ()).ok(),
         qh,
@@ -263,6 +319,8 @@ pub struct CosmicBg {
     shm_state: Shm,
     layer_state: LayerShell,
     viewporter: wp_viewporter::WpViewporter,
+    alpha_modifier: Option<wp_alpha_modifier_v1::WpAlphaModifierV1>,
+    subcompositor: Option<WlSubcompositor>,
     fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     session_lock_layer_manager:
         Option<cosmic_session_lock_layer_manager_v1::CosmicSessionLockLayerManagerV1>,
@@ -277,7 +335,12 @@ pub struct CosmicBg {
 
 impl CosmicBg {
     fn apply_backgrounds(&mut self) {
-        self.wallpapers.clear();
+        let mut outgoing = std::mem::take(&mut self.wallpapers);
+        let mut layers = Vec::new();
+        for wallpaper in &mut outgoing {
+            layers.append(&mut wallpaper.layers);
+        }
+        layers.retain(CosmicBgLayer::is_layer);
 
         let mut all_wallpaper = Wallpaper::new(
             self.config.default_background.clone(),
@@ -288,8 +351,9 @@ impl CosmicBg {
 
         let mut backgrounds = self.config.backgrounds.clone();
         backgrounds.sort_by(|a, b| a.output.cmp(&b.output));
+        let active_outputs = self.active_outputs.clone();
 
-        'outer: for output in &self.active_outputs {
+        'outer: for output in &active_outputs {
             let Some(output_info) = self.output_state.info(output) else {
                 continue;
             };
@@ -304,9 +368,10 @@ impl CosmicBg {
                         self.source_tx.clone(),
                     );
 
-                    new_wallpaper
-                        .layers
-                        .push(self.new_layer(output.clone(), output_info));
+                    let layer = take_layer(&mut layers, output)
+                        .unwrap_or_else(|| self.new_layer(output.clone(), output_info));
+                    self.start_wallpaper(&mut new_wallpaper, layer, background.transition_duration);
+                    new_wallpaper.draw();
                     _ = new_wallpaper.save_state();
                     self.wallpapers.push(new_wallpaper);
 
@@ -314,13 +379,125 @@ impl CosmicBg {
                 }
             }
 
-            all_wallpaper
-                .layers
-                .push(self.new_layer(output.clone(), output_info));
+            let layer = take_layer(&mut layers, output)
+                .unwrap_or_else(|| self.new_layer(output.clone(), output_info));
+            self.start_wallpaper(
+                &mut all_wallpaper,
+                layer,
+                self.config.default_background.transition_duration,
+            );
         }
 
+        all_wallpaper.draw();
         _ = all_wallpaper.save_state();
         self.wallpapers.push(all_wallpaper);
+    }
+
+    /// Show a wallpaper on a layer, fading in above it when the compositor can.
+    fn start_wallpaper(
+        &mut self,
+        wallpaper: &mut Wallpaper,
+        mut layer: CosmicBgLayer,
+        duration: u64,
+    ) {
+        let fading = self.new_fading_surface(&layer, Duration::from_millis(duration));
+
+        layer.needs_redraw = fading.is_none();
+        wallpaper.layers.push(layer);
+        if let Some(fading) = fading {
+            wallpaper.layers.push(fading);
+        }
+    }
+
+    /// A surface above a layer's own, which a wallpaper fades in on.
+    fn new_fading_surface(
+        &self,
+        parent: &CosmicBgLayer,
+        duration: Duration,
+    ) -> Option<CosmicBgLayer> {
+        if duration.is_zero() || self.alpha_modifier.is_none() {
+            return None;
+        }
+
+        let (width, height) = parent.size?;
+        let scale = parent.fractional_scale?;
+        let subcompositor = self.subcompositor.as_ref()?;
+
+        let surface = self.compositor_state.create_surface(&self.qh);
+        let subsurface = subcompositor.get_subsurface(&surface, parent.surface(), &self.qh, ());
+        subsurface.set_desync();
+        subsurface.set_position(0, 0);
+        subsurface.place_above(parent.surface());
+
+        let viewport = self.viewporter.get_viewport(&surface, &self.qh, ());
+        let alpha = self
+            .alpha_modifier
+            .as_ref()?
+            .get_surface(&surface, &self.qh, ());
+        alpha.set_multiplier(0);
+
+        Some(CosmicBgLayer {
+            kind: LayerKind::Subsurface {
+                subsurface,
+                wl_surface: surface,
+                fade: Some(FadeIn {
+                    alpha,
+                    fade: Fade::new(duration),
+                }),
+            },
+            viewport,
+            wl_output: parent.wl_output.clone(),
+            output_info: parent.output_info.clone(),
+            pool: SlotPool::new(width as usize * height as usize * 4, &self.shm_state).ok(),
+            needs_redraw: true,
+            size: Some((width, height)),
+            fractional_scale: Some(scale),
+        })
+    }
+
+    /// Draw a wallpaper on fresh surfaces, fading in over what is beneath it.
+    pub fn fade_wallpaper(&mut self, index: usize) {
+        let Some(wallpaper) = self.wallpapers.get(index) else {
+            return;
+        };
+        let duration = Duration::from_millis(wallpaper.entry.transition_duration);
+        let fading = wallpaper
+            .layers
+            .iter()
+            .filter(|layer| layer.is_layer())
+            .filter_map(|layer| self.new_fading_surface(layer, duration))
+            .collect::<Vec<_>>();
+
+        let Some(wallpaper) = self.wallpapers.get_mut(index) else {
+            return;
+        };
+        if fading.is_empty() {
+            for layer in &mut wallpaper.layers {
+                layer.needs_redraw = true;
+            }
+        } else {
+            wallpaper.layers.extend(fading);
+        }
+        wallpaper.draw();
+    }
+
+    /// Take over from a subsurface that finished fading in, and drop it.
+    fn finish_fade(&mut self, wallpaper_index: usize, layer_index: usize) {
+        let output = self.wallpapers[wallpaper_index].layers[layer_index]
+            .wl_output
+            .clone();
+        let wallpaper = &mut self.wallpapers[wallpaper_index];
+
+        for layer in &mut wallpaper.layers {
+            if layer.wl_output == output && layer.is_layer() {
+                layer.needs_redraw = true;
+            }
+        }
+        wallpaper.layers.remove(layer_index);
+        wallpaper.draw();
+
+        #[cfg(target_env = "gnu")]
+        malloc::trim();
     }
 
     #[must_use]
@@ -358,7 +535,7 @@ impl CosmicBg {
         };
 
         CosmicBgLayer {
-            layer,
+            kind: LayerKind::Layer(layer),
             viewport,
             wl_output: output,
             output_info,
@@ -383,7 +560,7 @@ impl CompositorHandler for CosmicBg {
                 if let Some(layer) = wallpaper
                     .layers
                     .iter_mut()
-                    .find(|layer| layer.layer.wl_surface() == surface)
+                    .find(|layer| layer.surface() == surface)
                 {
                     layer.fractional_scale = Some(new_factor as u32 * 120);
                     wallpaper.draw();
@@ -396,10 +573,51 @@ impl CompositorHandler for CosmicBg {
     fn frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        time: u32,
     ) {
+        let Some(wallpaper_index) = self
+            .wallpapers
+            .iter()
+            .position(|wallpaper| wallpaper.layers.iter().any(|l| l.surface() == surface))
+        else {
+            return;
+        };
+        let Some(layer_index) = self.wallpapers[wallpaper_index]
+            .layers
+            .iter()
+            .position(|layer| layer.surface() == surface)
+        else {
+            return;
+        };
+
+        let done = {
+            let layer = &mut self.wallpapers[wallpaper_index].layers[layer_index];
+            let LayerKind::Subsurface {
+                fade: Some(fade_in),
+                ..
+            } = &mut layer.kind
+            else {
+                return;
+            };
+
+            let (progress, done) = fade_in.fade.progress(time);
+            fade_in
+                .alpha
+                .set_multiplier(multiplier(slerp(0.0, 1.0, progress)));
+
+            if !done {
+                surface.frame(qh, surface.clone());
+            }
+            surface.commit();
+
+            done
+        };
+
+        if done {
+            self.finish_fade(wallpaper_index, layer_index);
+        }
     }
 
     fn transform_changed(
@@ -482,7 +700,7 @@ impl OutputHandler for CosmicBg {
                 if let Some(layer) = wallpaper
                     .layers
                     .iter_mut()
-                    .find(|layer| layer.wl_output == output)
+                    .find(|layer| layer.wl_output == output && layer.is_layer())
                 {
                     layer.fractional_scale = Some(output_info.scale_factor as u32 * 120);
                     wallpaper.draw();
@@ -528,7 +746,7 @@ impl OutputHandler for CosmicBg {
         let Some(layer_position) = output_wallpaper
             .layers
             .iter()
-            .position(|bg_layer| bg_layer.wl_output == output)
+            .position(|bg_layer| bg_layer.is_layer() && bg_layer.wl_output == output)
         else {
             return;
         };
@@ -544,10 +762,18 @@ impl LayerShellHandler for CosmicBg {
         _qh: &QueueHandle<Self>,
         dropped_layer: &LayerSurface,
     ) {
+        let dropped = dropped_layer.wl_surface();
+        let output = self
+            .wallpapers
+            .iter()
+            .flat_map(|wallpaper| wallpaper.layers.iter())
+            .find(|layer| layer.surface() == dropped)
+            .map(|layer| layer.wl_output.clone());
+
         for wallpaper in &mut self.wallpapers {
-            wallpaper
-                .layers
-                .retain(|layer| &layer.layer != dropped_layer);
+            wallpaper.layers.retain(|layer| {
+                layer.surface() != dropped && Some(&layer.wl_output) != output.as_ref()
+            });
         }
     }
 
@@ -564,7 +790,11 @@ impl LayerShellHandler for CosmicBg {
 
         for wallpaper in &mut self.wallpapers {
             let (w, h) = configure.new_size;
-            if let Some(w_layer) = wallpaper.layers.iter_mut().find(|l| &l.layer == layer) {
+            if let Some(w_layer) = wallpaper
+                .layers
+                .iter_mut()
+                .find(|l| matches!(&l.kind, LayerKind::Layer(surface) if surface == layer))
+            {
                 w_layer.size = Some((w, h));
                 w_layer.needs_redraw = true;
 
@@ -605,6 +835,10 @@ delegate_output!(CosmicBg);
 delegate_shm!(CosmicBg);
 delegate_layer!(CosmicBg);
 delegate_registry!(CosmicBg);
+delegate_noop!(CosmicBg: WlSubcompositor);
+delegate_noop!(CosmicBg: WlSubsurface);
+delegate_noop!(CosmicBg: wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1);
+delegate_noop!(CosmicBg: wp_alpha_modifier_v1::WpAlphaModifierV1);
 delegate_noop!(CosmicBg: wp_viewporter::WpViewporter);
 delegate_noop!(CosmicBg: wp_viewport::WpViewport);
 delegate_noop!(CosmicBg: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
@@ -628,7 +862,7 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSu
                         if let Some(layer) = wallpaper
                             .layers
                             .iter_mut()
-                            .find(|layer| layer.layer.wl_surface() == &surface)
+                            .find(|layer| layer.surface() == &surface)
                         {
                             layer.fractional_scale = Some(scale);
                             wallpaper.draw();
@@ -647,6 +881,13 @@ impl ProvidesRegistryState for CosmicBg {
         &mut self.registry_state
     }
     registry_handlers![OutputState];
+}
+
+fn take_layer(layers: &mut Vec<CosmicBgLayer>, output: &WlOutput) -> Option<CosmicBgLayer> {
+    let index = layers
+        .iter()
+        .position(|layer| layer.is_layer() && layer.wl_output == *output)?;
+    Some(layers.remove(index))
 }
 
 fn init_logger() {
