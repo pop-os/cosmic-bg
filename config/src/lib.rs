@@ -76,6 +76,10 @@ impl Context {
     }
 }
 
+const fn default_transition_duration() -> u64 {
+    500
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Setters)]
 #[serde(deny_unknown_fields)]
 #[must_use]
@@ -91,6 +95,10 @@ pub struct Entry {
     pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
+    /// how long a wallpaper takes to fade in over the one it replaces, in
+    /// milliseconds
+    #[serde(default = "default_transition_duration")]
+    pub transition_duration: u64,
     /// filter used to scale images
     #[serde(default)]
     pub filter_method: FilterMethod,
@@ -132,6 +140,7 @@ impl Entry {
             source,
             filter_by_theme: false,
             rotation_frequency: 900,
+            transition_duration: default_transition_duration(),
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
@@ -147,6 +156,7 @@ impl Entry {
             )),
             filter_by_theme: true,
             rotation_frequency: 3600,
+            transition_duration: default_transition_duration(),
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
