@@ -166,6 +166,10 @@ impl Context {
     }
 }
 
+const fn default_transition_duration() -> u64 {
+    500
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Setters)]
 #[must_use]
 pub struct Entry {
@@ -177,6 +181,10 @@ pub struct Entry {
     pub source: Source,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
+    /// how long a wallpaper takes to fade in over the one it replaces, in
+    /// milliseconds
+    #[serde(default = "default_transition_duration")]
+    pub transition_duration: u64,
     /// filter used to scale images
     #[serde(default)]
     pub filter_method: FilterMethod,
@@ -217,6 +225,7 @@ impl Entry {
             output,
             source,
             rotation_frequency: 900,
+            transition_duration: default_transition_duration(),
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
@@ -231,6 +240,7 @@ impl Entry {
                 "/usr/share/backgrounds/cosmic/orion_nebula_nasa_heic0601a.jpg",
             )),
             rotation_frequency: 3600,
+            transition_duration: default_transition_duration(),
             filter_method: FilterMethod::default(),
             scaling_mode: ScalingMode::default(),
             sampling_method: SamplingMethod::default(),
