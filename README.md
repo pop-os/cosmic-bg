@@ -7,7 +7,7 @@ COSMIC session service which applies backgrounds to displays. Supports the follo
 - Use of colors and gradients for backgrounds
 - Per-display background application
 - Wallpaper slideshows that alternate between backgrounds periodically
-
+- Backgrounds of their own for dark and light, applied by the mode
 
 ## Dependencies
 
