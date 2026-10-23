@@ -432,6 +432,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config"
 version = "1.0.0"
+source = "git+https://github.com/pop-os/libcosmic?branch=bundles#7c0614514b75347727df87c70e04e25bece9ad5f"
 dependencies = [
  "atomicwrites",
  "calloop",
@@ -448,6 +449,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config-derive"
 version = "1.0.0"
+source = "git+https://github.com/pop-os/libcosmic?branch=bundles#7c0614514b75347727df87c70e04e25bece9ad5f"
 dependencies = [
  "quote",
  "syn 2.0.119",
