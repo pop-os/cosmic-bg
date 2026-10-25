@@ -2,7 +2,7 @@
 name = "cosmic-bg"
 version = "1.11.0"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.95"
 
 [features]
 default = ["avif"]
@@ -16,7 +16,7 @@ eyre = "0.6.12"
 fast_image_resize = { version = "6.1.0", features = ["image"] }
 image = { workspace = true, features = ["hdr", "jpeg", "png", "rayon", "webp"] }
 rayon = "1.12"
-jxl-oxide = { version = "0.12.6", features = ["image"] }
+jxl-image-rs-integration = "0.8"
 notify = "8.2.0"
 rand = "0.10"
 sctk = { package = "smithay-client-toolkit", version = "0.20.0" }

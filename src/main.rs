@@ -93,7 +93,7 @@ fn main() -> color_eyre::Result<()> {
         }
     }
 
-    let _ = jxl_oxide::integration::register_image_decoding_hook();
+    jxl_image_rs_integration::register_image_decoding_hook();
 
     init_logger();
 
