@@ -434,23 +434,23 @@ mod tests {
         // Assume XDG_DATA_DIRS does NOT contain this temp dir (which is true)
         let xdg_data_dirs: Vec<String> = Vec::new();
 
-        if let Ok(source) = source.canonicalize() {
-            if source.is_dir() {
-                if xdg_data_dirs
-                    .iter()
-                    .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
+        if let Ok(source) = source.canonicalize()
+            && source.is_dir()
+        {
+            if xdg_data_dirs
+                .iter()
+                .any(|xdg_data_dir| source.starts_with(xdg_data_dir))
+            {
+                // This block should NOT be hit
+                panic!("Test setup error: temp dir shouldn't be in XDG_DATA_DIRS");
+            } else {
+                for img_path in WalkDir::new(source)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|p| p.path().is_file())
                 {
-                    // This block should NOT be hit
-                    panic!("Test setup error: temp dir shouldn't be in XDG_DATA_DIRS");
-                } else {
-                    for img_path in WalkDir::new(source)
-                        .follow_links(true)
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .filter(|p| p.path().is_file())
-                    {
-                        image_queue.push_front(img_path.path().into());
-                    }
+                    image_queue.push_front(img_path.path().into());
                 }
             }
         }

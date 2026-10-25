@@ -339,10 +339,10 @@ impl CosmicBg {
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
 
-        if let Some(session_lock_layer_manager) = &self.session_lock_layer_manager {
-            if let sctk::shell::wlr_layer::SurfaceKind::Wlr(surface) = layer.kind() {
-                session_lock_layer_manager.set_show_on_lock(surface);
-            }
+        if let Some(session_lock_layer_manager) = &self.session_lock_layer_manager
+            && let sctk::shell::wlr_layer::SurfaceKind::Wlr(surface) = layer.kind()
+        {
+            session_lock_layer_manager.set_show_on_lock(surface);
         }
 
         surface.commit();
