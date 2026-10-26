@@ -35,6 +35,7 @@ impl Context {
     pub fn backgrounds(&self) -> Vec<String> {
         match self.0.get::<Vec<String>>(BACKGROUNDS) {
             Ok(value) => value,
+            Err(why) if !why.is_err() => Vec::new(),
             Err(why) => {
                 tracing::error!(?why, "error reading background config");
                 Vec::new()
@@ -86,6 +87,7 @@ pub struct Entry {
     #[setters(skip)]
     pub source: Source,
     /// whether the images should be filtered by the active theme
+    #[serde(default)]
     pub filter_by_theme: bool,
     /// frequency at which the wallpaper is rotated in seconds
     pub rotation_frequency: u64,
