@@ -6,6 +6,7 @@ COSMIC session service which applies backgrounds to displays. Supports the follo
 - 8 and 10-bit background surface layers
 - Use of colors and gradients for backgrounds
 - Per-display background application
+- Separate backgrounds for dark and light mode
 - Wallpaper slideshows that alternate between backgrounds periodically
 
 

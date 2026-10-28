@@ -10,17 +10,93 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub const NAME: &str = "com.system76.CosmicBackground";
+pub const VERSION: u64 = 1;
 pub const BACKGROUNDS: &str = "backgrounds";
 pub const DEFAULT_BACKGROUND: &str = "all";
 pub const SAME_ON_ALL: &str = "same-on-all";
 
-/// Create a context to the `cosmic-bg` config.
+pub const MODE_NAME: &str = "com.system76.CosmicTheme.Mode";
+pub const MODE_VERSION: u64 = 1;
+pub const MODE_KEY: &str = "is_dark";
+
+/// The theme mode a background config belongs to.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum Mode {
+    /// Dark mode.
+    Dark,
+    /// Light mode.
+    Light,
+}
+
+impl Mode {
+    /// Every mode.
+    pub const ALL: [Self; 2] = [Self::Dark, Self::Light];
+
+    /// The mode for a dark / light flag.
+    pub const fn from_is_dark(is_dark: bool) -> Self {
+        if is_dark { Self::Dark } else { Self::Light }
+    }
+
+    /// The background config ID for this mode.
+    pub const fn config_name(self) -> &'static str {
+        match self {
+            Self::Dark => "com.system76.CosmicBackground.Dark",
+            Self::Light => "com.system76.CosmicBackground.Light",
+        }
+    }
+
+    /// Create a context to this mode's backgrounds.
+    ///
+    /// # Errors
+    ///
+    /// Fails if cosmic-config paths are missing or cannot be created.
+    pub fn context(self) -> Result<Context, cosmic_config::Error> {
+        CosmicConfig::new(self.config_name(), VERSION).map(Context)
+    }
+
+    /// The config that says whether dark or light is active.
+    ///
+    /// # Errors
+    ///
+    /// Fails if cosmic-config paths are missing or cannot be created.
+    pub fn config() -> Result<CosmicConfig, cosmic_config::Error> {
+        CosmicConfig::new(MODE_NAME, MODE_VERSION)
+    }
+
+    /// The current theme mode.
+    #[must_use]
+    pub fn current() -> Self {
+        Self::config()
+            .and_then(|config| config.get::<bool>(MODE_KEY))
+            .map_or(Self::Dark, Self::from_is_dark)
+    }
+}
+
+/// Create a context to the backgrounds of the current mode.
 ///
 /// # Errors
 ///
 /// Fails if cosmic-config paths are missing or cannot be created.
 pub fn context() -> Result<Context, cosmic_config::Error> {
-    CosmicConfig::new(NAME, 1).map(Context)
+    Mode::current().context()
+}
+
+/// Create a context to the backgrounds of a given mode.
+///
+/// # Errors
+///
+/// Fails if cosmic-config paths are missing or cannot be created.
+pub fn context_for(mode: Mode) -> Result<Context, cosmic_config::Error> {
+    mode.context()
+}
+
+/// The background config shared by both modes before per-mode configs.
+///
+/// # Errors
+///
+/// Fails if cosmic-config paths are missing or cannot be created.
+pub fn shared() -> Result<CosmicConfig, cosmic_config::Error> {
+    CosmicConfig::new(NAME, VERSION)
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +149,46 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    /// Seed this mode's backgrounds from the config both modes used before per-mode configs.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the config cannot be read or written.
+    pub fn seed_from(&self, shared: &CosmicConfig) -> Result<bool, cosmic_config::Error> {
+        if self.0.get_local::<Entry>(DEFAULT_BACKGROUND).is_ok() {
+            return Ok(false);
+        }
+
+        let mut seeded = false;
+
+        if let Ok(entry) = shared.get_local::<Entry>(DEFAULT_BACKGROUND) {
+            self.0.set(DEFAULT_BACKGROUND, entry)?;
+            seeded = true;
+        }
+
+        let backgrounds = shared
+            .get_local::<Vec<String>>(BACKGROUNDS)
+            .unwrap_or_default();
+        for output in &backgrounds {
+            let key = ["output.", output].concat();
+            if let Ok(entry) = shared.get_local::<Entry>(&key) {
+                self.0.set(&key, entry)?;
+                seeded = true;
+            }
+        }
+        if !backgrounds.is_empty() {
+            self.0.set(BACKGROUNDS, backgrounds)?;
+            seeded = true;
+        }
+
+        if let Ok(same_on_all) = shared.get_local::<bool>(SAME_ON_ALL) {
+            self.0.set(SAME_ON_ALL, same_on_all)?;
+            seeded = true;
+        }
+
+        Ok(seeded)
     }
 }
 
