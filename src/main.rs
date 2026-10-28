@@ -166,90 +166,70 @@ fn main() -> color_eyre::Result<()> {
         .map_err(|err| err.error)
         .wrap_err("failed to insert main EventLoop into WaylandSource")?;
 
-    let config_context = cosmic_bg_config::context();
+    let mode = cosmic_bg_config::Mode::current();
 
-    let config = match config_context {
-        Ok(config_context) => {
-            let source = ConfigWatchSource::new(&config_context.0)
-                .expect("failed to create ConfigWatchSource");
+    let contexts = cosmic_bg_config::Mode::ALL
+        .into_iter()
+        .filter_map(|mode| match mode.context() {
+            Ok(context) => Some((mode, context)),
+            Err(why) => {
+                tracing::error!(?why, ?mode, "failed to read background config");
+                None
+            }
+        })
+        .collect::<Vec<_>>();
 
-            let conf_context = config_context.clone();
-            event_loop
-                .handle()
-                .insert_source(source, move |(_config, keys), (), state| {
-                    let mut changes_applied = false;
+    if let Ok(shared) = cosmic_bg_config::shared() {
+        for (mode, context) in &contexts {
+            match context.seed_from(&shared) {
+                Ok(true) => tracing::debug!(?mode, "seeded backgrounds from the shared config"),
+                Ok(false) => {}
+                Err(why) => tracing::error!(?why, ?mode, "failed to seed background config"),
+            }
+        }
+    }
 
-                    for key in &keys {
-                        match key.as_str() {
-                            cosmic_bg_config::BACKGROUNDS => {
-                                tracing::debug!("updating backgrounds");
-                                state.config.load_backgrounds(&conf_context);
-                                changes_applied = true;
-                            }
-
-                            cosmic_bg_config::DEFAULT_BACKGROUND => {
-                                tracing::debug!("updating default background");
-                                let entry = conf_context.default_background();
-
-                                if state.config.default_background != entry {
-                                    state.config.default_background = entry;
-                                    changes_applied = true;
-                                }
-                            }
-
-                            cosmic_bg_config::SAME_ON_ALL => {
-                                tracing::debug!("updating same_on_all");
-                                state.config.same_on_all = conf_context.same_on_all();
-
-                                if state.config.same_on_all {
-                                    state.config.outputs.clear();
-                                } else {
-                                    state.config.load_backgrounds(&conf_context);
-                                }
-                                state.config.outputs.clear();
-                                changes_applied = true;
-                            }
-
-                            _ => {
-                                tracing::debug!(key, "key modified");
-                                if let Some(output) = key.strip_prefix("output.")
-                                    && let Ok(new_entry) = conf_context.entry(key)
-                                    && let Some(existing) = state.config.entry_mut(output)
-                                {
-                                    *existing = new_entry;
-                                    changes_applied = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if changes_applied {
-                        state.apply_backgrounds();
-
-                        #[cfg(target_env = "gnu")]
-                        malloc::trim();
-
-                        tracing::debug!(
-                            same_on_all = state.config.same_on_all,
-                            outputs = ?state.config.outputs,
-                            backgrounds = ?state.config.backgrounds,
-                            default_background = ?state.config.default_background.source,
-                            "new state"
-                        );
-                    }
-                })
-                .expect("failed to insert config watching source into event loop");
-
-            Config::load(&config_context).unwrap_or_else(|why| {
+    let config = contexts
+        .iter()
+        .find(|(context_mode, _)| *context_mode == mode)
+        .map_or_else(Config::default, |(_, context)| {
+            Config::load(context).unwrap_or_else(|why| {
                 tracing::error!(?why, "Config file error, falling back to defaults");
                 Config::default()
             })
+        });
+
+    match cosmic_bg_config::Mode::config() {
+        Ok(mode_config) => match ConfigWatchSource::new(&mode_config) {
+            Ok(source) => {
+                event_loop
+                    .handle()
+                    .insert_source(source, |(_config, _keys), (), state| {
+                        state.set_mode(cosmic_bg_config::Mode::current());
+                    })
+                    .expect("failed to insert mode watching source into event loop");
+            }
+            Err(why) => tracing::error!(?why, "failed to watch theme mode config"),
+        },
+        Err(why) => tracing::error!(?why, "failed to read theme mode config"),
+    }
+
+    for (context_mode, context) in &contexts {
+        match ConfigWatchSource::new(&context.0) {
+            Ok(source) => {
+                let context_mode = *context_mode;
+                event_loop
+                    .handle()
+                    .insert_source(source, move |(_config, _keys), (), state| {
+                        state.mode_changed(context_mode);
+                    })
+                    .expect("failed to insert background watching source into event loop");
+            }
+            Err(why) => {
+                tracing::error!(?why, ?context_mode, "failed to watch background config");
+            }
         }
-        Err(why) => {
-            tracing::error!(?why, "Config file error, falling back to defaults");
-            Config::default()
-        }
-    };
+    }
 
     let source_tx = img_source::img_source(&event_loop.handle());
 
@@ -296,6 +276,8 @@ fn main() -> color_eyre::Result<()> {
         loop_handle: event_loop.handle(),
         exit: false,
         wallpapers,
+        mode,
+        contexts,
         config,
         active_outputs: Vec::new(),
     };
@@ -329,11 +311,59 @@ pub struct CosmicBg {
     loop_handle: calloop::LoopHandle<'static, CosmicBg>,
     exit: bool,
     wallpapers: Vec<Wallpaper>,
+    mode: cosmic_bg_config::Mode,
+    contexts: Vec<(cosmic_bg_config::Mode, cosmic_bg_config::Context)>,
     config: Config,
     active_outputs: Vec<WlOutput>,
 }
 
 impl CosmicBg {
+    fn mode_changed(&mut self, mode: cosmic_bg_config::Mode) {
+        if mode == self.mode {
+            self.reload();
+        }
+    }
+
+    fn set_mode(&mut self, mode: cosmic_bg_config::Mode) {
+        if mode == self.mode {
+            return;
+        }
+
+        tracing::debug!(?mode, "theme mode changed");
+        self.mode = mode;
+        self.reload();
+    }
+
+    fn reload(&mut self) {
+        let Some((_, context)) = self.contexts.iter().find(|(mode, _)| *mode == self.mode) else {
+            return;
+        };
+
+        let config = Config::load(context).unwrap_or_else(|why| {
+            tracing::error!(?why, "Config file error, falling back to defaults");
+            Config::default()
+        });
+
+        if config == self.config {
+            return;
+        }
+
+        self.config = config;
+        self.apply_backgrounds();
+
+        #[cfg(target_env = "gnu")]
+        malloc::trim();
+
+        tracing::debug!(
+            mode = ?self.mode,
+            same_on_all = self.config.same_on_all,
+            outputs = ?self.config.outputs,
+            backgrounds = ?self.config.backgrounds,
+            default_background = ?self.config.default_background.source,
+            "new state"
+        );
+    }
+
     fn apply_backgrounds(&mut self) {
         let mut outgoing = std::mem::take(&mut self.wallpapers);
         let mut layers = Vec::new();
