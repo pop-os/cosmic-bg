@@ -4,7 +4,6 @@ use crate::{CosmicBg, CosmicBgLayer};
 use image::{DynamicImage, GenericImageView};
 use sctk::reexports::client::QueueHandle;
 use sctk::reexports::client::protocol::wl_shm;
-use sctk::shell::WaylandSurface;
 use sctk::shm::slot::{Buffer, CreateBufferError, SlotPool};
 
 pub fn canvas(
@@ -48,16 +47,13 @@ pub fn layer_surface(
 ) {
     let (width, height) = layer.size.unwrap();
 
-    let wl_surface = layer.layer.wl_surface();
+    let wl_surface = layer.surface();
 
     // Damage the entire window
     wl_surface.damage_buffer(0, 0, buffer_damage.0, buffer_damage.1);
 
     // Request our next frame
-    layer
-        .layer
-        .wl_surface()
-        .frame(queue_handle, wl_surface.clone());
+    wl_surface.frame(queue_handle, wl_surface.clone());
 
     // Attach and commit to present.
     if let Err(why) = buffer.attach_to(wl_surface) {
