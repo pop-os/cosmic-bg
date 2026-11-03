@@ -386,6 +386,7 @@ impl CompositorHandler for CosmicBg {
                     .find(|layer| layer.layer.wl_surface() == surface)
                 {
                     layer.fractional_scale = Some(new_factor as u32 * 120);
+                    layer.needs_redraw = true;
                     wallpaper.draw();
                     break;
                 }
@@ -631,6 +632,7 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, Weak<wl_surface::WlSu
                             .find(|layer| layer.layer.wl_surface() == &surface)
                         {
                             layer.fractional_scale = Some(scale);
+                            layer.needs_redraw = true;
                             wallpaper.draw();
                             break;
                         }
