@@ -1,7 +1,16 @@
 appid := env_var('APPID')
 install-dir := env_var('INSTALL_DIR')
 
-default-schema-target := install-dir / 'cosmic' / appid
+schema-dir := install-dir / 'cosmic'
+
+default-schema-target := schema-dir / appid
+dark-schema-target := schema-dir / (appid + '.Dark')
+light-schema-target := schema-dir / (appid + '.Light')
 
 install:
     find v1 -type f -exec install -Dm0644 {} {{default-schema-target}}/{} \;
+    cd dark && find v1 -type f -exec install -Dm0644 {} {{dark-schema-target}}/{} \;
+    cd light && find v1 -type f -exec install -Dm0644 {} {{light-schema-target}}/{} \;
+
+uninstall:
+    rm -rf {{default-schema-target}} {{dark-schema-target}} {{light-schema-target}}
