@@ -24,7 +24,7 @@ pub fn fit(
         (h as f64 * ratio).round() as u32,
     );
 
-    let resized_image = resize(img, new_width, new_height);
+    let resized_image = resize(img, new_width, new_height, None);
 
     image::imageops::replace(
         &mut filled_image,
@@ -41,7 +41,7 @@ pub fn stretch(
     layer_width: u32,
     layer_height: u32,
 ) -> image::DynamicImage {
-    resize(img, layer_width, layer_height)
+    resize(img, layer_width, layer_height, None)
 }
 
 pub fn zoom(img: &image::DynamicImage, layer_width: u32, layer_height: u32) -> image::DynamicImage {
@@ -49,37 +49,43 @@ pub fn zoom(img: &image::DynamicImage, layer_width: u32, layer_height: u32) -> i
 
     let ratio = (layer_width as f64 / w as f64).max(layer_height as f64 / h as f64);
 
-    let (new_width, new_height) = (
-        (w as f64 * ratio).round() as u32,
-        (h as f64 * ratio).round() as u32,
+    let (crop_width, crop_height) = (
+        ((layer_width as f64 / ratio).round() as u32).clamp(1, w),
+        ((layer_height as f64 / ratio).round() as u32).clamp(1, h),
     );
+    let (x, y) = ((w - crop_width) / 2, (h - crop_height) / 2);
+    let crop = Some((x, y, crop_width, crop_height));
 
-    let mut new_image = resize(img, new_width, new_height);
-
-    image::imageops::crop(
-        &mut new_image,
-        (new_width - layer_width) / 2,
-        (new_height - layer_height) / 2,
-        layer_width,
-        layer_height,
-    )
-    .to_image()
-    .into()
+    resize(img, layer_width, layer_height, crop)
 }
 
-fn resize(img: &image::DynamicImage, new_width: u32, new_height: u32) -> image::DynamicImage {
+fn resize(
+    img: &image::DynamicImage,
+    new_width: u32,
+    new_height: u32,
+    crop: Option<(u32, u32, u32, u32)>,
+) -> image::DynamicImage {
     let mut resizer = fast_image_resize::Resizer::new();
-    let options = fast_image_resize::ResizeOptions {
+    let mut options = fast_image_resize::ResizeOptions {
         algorithm: fast_image_resize::ResizeAlg::Convolution(
             fast_image_resize::FilterType::Lanczos3,
         ),
         ..Default::default()
     };
+    if let Some((x, y, width, height)) = crop {
+        options = options.crop(x.into(), y.into(), width.into(), height.into());
+    }
     let mut new_image = image::DynamicImage::new(new_width, new_height, img.color());
     if let Err(err) = resizer.resize(img, &mut new_image, &options) {
         tracing::warn!(?err, "Failed to use `fast_image_resize`. Falling back.");
-        new_image =
-            image::imageops::resize(img, new_width, new_height, FilterType::Lanczos3).into();
+        let cropped = crop.map(|(x, y, width, height)| img.crop_imm(x, y, width, height));
+        new_image = image::imageops::resize(
+            cropped.as_ref().unwrap_or(img),
+            new_width,
+            new_height,
+            FilterType::Lanczos3,
+        )
+        .into();
     }
     new_image
 }
